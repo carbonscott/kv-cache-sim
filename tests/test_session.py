@@ -125,6 +125,20 @@ def test_effort_switch_invalidates(config):
     assert s.state.cached_tokens == 0
 
 
+def test_ttl_switch_changes_rate_without_invalidating(config):
+    s = warm_session(config, prefix=50_000)
+    s.handle("ttl 1h")
+    assert s.state.ttl_seconds == config.ttl_seconds["1h"]   # 3600
+    assert s.state.cached_tokens == 50_000                   # NOT invalidated
+
+
+def test_unknown_ttl_is_rejected(config):
+    s = warm_session(config)
+    out = s.handle("ttl 2h")
+    assert any("usage: ttl" in line for line in out)
+    assert s.state.ttl_seconds == config.ttl_seconds["5m"]   # unchanged
+
+
 def test_unknown_command_is_reported(config):
     s = warm_session(config)
     out = s.handle("frobnicate 3")

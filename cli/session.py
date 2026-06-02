@@ -12,6 +12,7 @@ Session has no I/O of its own: handle() returns a list of output lines for the c
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 
 from sim.config import Config
 from sim.engine import apply_event
@@ -36,6 +37,7 @@ HELP = """commands:
   assistant <n | text...> add assistant-output tokens to the pending turn
   send                    commit the pending turn (a blank line does the same)
   advance <dur>           jump the clock (e.g. 90s, 6m, 1h, or bare seconds)
+  ttl <5m | 1h>           switch cache TTL (no invalidation; changes the write rate)
   rewind <to_tokens>      truncate back to an earlier prefix length (re-hits in TTL)
   compact <summary_tokens> replace the conversation layer with a summary (keeps system)
   clear-tools <n>         clear n tokens of old tool results (invalidates downstream)
@@ -49,7 +51,7 @@ HELP = """commands:
 # The canonical list of top-level command verbs, used by the REPL's Tab
 # completer. Kept in sync with the if/elif chain in Session.handle().
 COMMAND_NAMES = (
-    "user", "tool", "assistant", "send", "advance", "rewind", "compact",
+    "user", "tool", "assistant", "send", "advance", "ttl", "rewind", "compact",
     "clear-tools", "model", "effort", "upgrade", "status", "help",
     "quit", "exit",
 )
@@ -148,6 +150,8 @@ class Session:
             return self._assistant(args)
         if command == "advance":
             return self._advance(args)
+        if command == "ttl":
+            return self._set_ttl(args)
         if command == "rewind":
             return self._rewind(args)
         if command == "compact":
@@ -195,6 +199,18 @@ class Session:
         except ValueError as e:
             return [str(e)]
         return self._apply(Advance(seconds=seconds))
+
+    def _set_ttl(self, args: list[str]) -> list[str]:
+        """Switch the cache TTL (e.g. 5m or 1h). TTL is auth-/time-driven, not part of
+        the cache key, so changing it invalidates nothing -- it only changes when the
+        cache expires and which write multiplier future turns pay."""
+        if not args or args[0] not in self.config.ttl_seconds:
+            known = ", ".join(self.config.ttl_seconds)
+            return [f"usage: ttl <{known}>"]
+        seconds = self.config.ttl_seconds[args[0]]
+        self.state = replace(self.state, ttl_seconds=seconds)
+        rate = self.config.write_multiplier(seconds)
+        return [f"ttl set to {args[0]} ({seconds}s); cache kept (write rate now {rate}x)"]
 
     def _rewind(self, args: list[str]) -> list[str]:
         if len(args) != 1 or not re.fullmatch(r"\d+", args[0]):
