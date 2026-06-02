@@ -259,3 +259,25 @@ def test_clear_tools_bad_arg_is_rejected(config):
     assert any("usage: clear-tools" in line for line in out)
     assert s.state == before
     assert s.turn_index == 0
+
+
+# -- status reflects effective (TTL-aware) cache -----------------------------
+
+def test_status_reports_zero_cached_after_idle_past_ttl(config):
+    """Once the session is idle past its TTL, status shows cached=0 (the cache the
+    next turn would actually find) rather than the stale snapshot, while the total
+    prefix length is unchanged."""
+    s = warm_session(config, prefix=50_000)  # ttl_seconds == 300
+    s.handle("user 500")
+    s.handle("send")                          # a real turn; cache is warm at now=0
+
+    warm_out = s.handle("status")
+    assert any("cached=50500/50500 tok" in line for line in warm_out)
+
+    s.handle("advance 300s")
+    s.handle("advance 300s")                  # now=600s, idle past the 300s TTL
+    expired_out = s.handle("status")
+    assert any("cached=0/50500 tok" in line for line in expired_out)
+    # The underlying prefix is untouched; only the displayed cache reads as cold.
+    assert s.state.prefix_tokens == 50_500
+    assert s.state.cached_tokens == 50_500

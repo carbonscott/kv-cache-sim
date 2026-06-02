@@ -65,9 +65,12 @@ def note_line(note: str) -> str:
 
 def status_line(state: CacheState, running_total: float) -> str:
     """A one-line snapshot of the current session state."""
+    # Report the *effective* cache: an idle-past-TTL session reads as cold, matching
+    # what the next turn would actually do, rather than the stale snapshot in cached_tokens.
+    cached = 0 if state.is_expired else state.cached_tokens
     return (
         f"model={state.model} effort={state.effort} "
         f"ttl={state.ttl_seconds}s now={state.now:.0f}s "
-        f"cached={state.cached_tokens}/{state.prefix_tokens} tok "
+        f"cached={cached}/{state.prefix_tokens} tok "
         f"total=${running_total:.5f}"
     )
