@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import sys
+from dataclasses import replace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -48,6 +49,20 @@ def warm_state(config, model="sonnet-4.6", prefix=50_000, ttl_key="5m"):
         prefix_tokens=prefix,
         cached_tokens=prefix,
     )
+
+
+def test_is_expired_warm_active_and_boundary(config):
+    """CacheState.is_expired: warm within TTL, expired past it, and the exact
+    boundary stays warm (matching the strict `>` the engine has always used)."""
+    state = warm_state(config, ttl_key="5m")  # ttl_seconds == 300
+
+    warm = replace(state, now=200.0)            # 200s idle < 300s TTL
+    boundary = replace(state, now=300.0)        # exactly at TTL
+    expired = replace(state, now=300.1)         # just past TTL
+
+    assert warm.is_expired is False
+    assert boundary.is_expired is False
+    assert expired.is_expired is True
 
 
 def test_validation_target_cached_turn_is_about_7x_cheaper(config):

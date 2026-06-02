@@ -35,3 +35,10 @@ class CacheState:
     cached_tokens: int       # leading tokens held in a valid, non-expired entry
     system_tokens: int = 0   # length of the protected leading prefix (system+tools+ctx)
     breakpoints: tuple[int, ...] = ()  # sorted offsets holding live cache entries
+
+    @property
+    def is_expired(self) -> bool:
+        """True when the session has been idle past its TTL: the cache entry has
+        lapsed and the next request will cold-resume. Single source of truth for the
+        idle-past-TTL test the engine applies at request time."""
+        return self.now - self.last_used > self.ttl_seconds

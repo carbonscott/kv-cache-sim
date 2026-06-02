@@ -106,7 +106,7 @@ def _apply_rewind(
         )
         return state, CostBreakdown.zero([note])
 
-    if state.now - state.last_used > state.ttl_seconds:
+    if state.is_expired:
         # The earlier entry has expired along with everything else: cold.
         new_cached = 0
         new_breakpoints: tuple[int, ...] = ()
@@ -239,7 +239,7 @@ def _apply_turn(
 
     # 1. Expire the cache if the session has been idle past its TTL.
     cached_tokens = state.cached_tokens
-    if state.now - state.last_used > state.ttl_seconds:
+    if state.is_expired:
         cached_tokens = 0
         notes.append("cold resume: idle past TTL, full rebuild")
 
