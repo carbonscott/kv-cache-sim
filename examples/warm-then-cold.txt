@@ -1,0 +1,47 @@
+# warm-then-cold.txt -- a scripted cache-sim story for run_batch.py
+#
+# This file IS the REPL command grammar, fed line by line to one Session.
+# Blank lines commit the pending turn (== `send`); `#` lines are comments,
+# used here for narration and visual spacing. NOTE: a blank line always
+# commits, so we use `#` lines (not blanks) to separate sections -- the only
+# blank lines below are the deliberate per-turn commits.
+#
+# The session starts cold on the first config model (opus-4.8) with an
+# empty prefix. We watch the cache warm up, expire, and rebuild.
+#
+# --- Turn 1: open a big context. Nothing is cached yet, so this is all
+# write -- the price we pay once to seed the prefix.
+paste 50000
+gen 500
+
+# --- Turn 2: a warm follow-up. The 50K prefix is cached, so we mostly
+# read (cheap) and only write the new tokens. Hit ratio should be high.
+paste 1500
+tool read_file 1200
+gen 600
+
+# --- Turn 3: still warm, ratio climbs further as the cached prefix grows.
+paste 1000
+gen 400
+
+# --- Idle 10 minutes: past the 5-minute TTL, so the cache goes cold.
+# (advance applies immediately -- no blank line / commit needed after it.)
+advance 10m
+# --- Turn 4: cold resume. The prefix has to be rebuilt from scratch --
+# expect a "cold resume" note and a cost spike.
+paste 1200
+gen 500
+
+# --- Turn 5: warm again on the freshly rebuilt prefix.
+paste 800
+gen 400
+
+# --- Switch models: this invalidates the cache (the new model can't reuse
+# the old prefix). Like advance, it applies immediately.
+model sonnet-4.6
+# --- Turn 6: rebuild on the new model -- another full write.
+paste 1000
+gen 700
+
+# --- Done.
+quit

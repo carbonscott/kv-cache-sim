@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Superseded May-25 handoff, kept locally but not published
+handoffs/prompt-cache-simulator.md

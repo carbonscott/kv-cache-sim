@@ -1,0 +1,40 @@
+# upgrade-cold-resume.txt -- a scripted cache-sim story for run_batch.py
+#
+# Shows the Stage 3 "upgrade cold resume": a warm session whose cache is wiped
+# by a Claude Code upgrade *even though we are still well within the TTL*. Unlike
+# the idle-past-TTL cold resume (time-based) or a model switch (cache-key change),
+# this fires purely because the new build ships a different system prompt, so the
+# whole history now sits behind a different prefix -- no hits at all.
+#
+# The session starts cold on the first config model (opus-4.8) with an empty
+# prefix. Blank lines commit the pending turn; `#` lines are comments.
+#
+# --- Turn 1: open a big context. Nothing is cached yet, so this is all write --
+# the price we pay once to seed the prefix.
+paste 40000
+gen 500
+
+# --- Turn 2: a warm follow-up. The prefix is cached, so we mostly read (cheap)
+# and only write the new tokens. Hit ratio should be high.
+paste 1500
+gen 600
+
+# --- Turn 3: still warm, ratio climbs further.
+paste 1000
+gen 400
+
+# --- Claude Code upgrades mid-session. We are still inside the 5-minute TTL, but
+# the new system prompt invalidates the whole cache (applies immediately, like
+# advance / model -- no commit needed).
+upgrade
+# --- Turn 4: the post-upgrade turn. Expect hit% = 0 and a full write of the whole
+# rebuilt prefix -- the most expensive request in the session.
+paste 1200
+gen 500
+
+# --- Turn 5: warm again on the freshly rebuilt prefix; hits return.
+paste 800
+gen 400
+
+# --- Done.
+quit

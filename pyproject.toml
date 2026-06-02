@@ -1,0 +1,16 @@
+[project]
+name = "kv-cache-sim"
+version = "0.1.0"
+description = "A simulator of a Claude Code-like session's prompt-cache state and cost"
+requires-python = ">=3.10"
+dependencies = [
+    "tiktoken>=0.7",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
