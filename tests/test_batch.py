@@ -72,7 +72,7 @@ def test_comment_line_is_ignored(config):
 
 def test_comment_does_not_commit_pending_turn(config):
     s = warm_session(config)
-    s.handle("paste 1000")
+    s.handle("user 1000")
     s.handle("# spacer comment, should NOT commit")
     assert s.turn_index == 0          # still pending
     assert s.pending_input == 1000
@@ -86,7 +86,7 @@ def test_comment_does_not_commit_pending_turn(config):
 
 def test_warm_turn_reads_cached_prefix(config):
     s = warm_session(config, prefix=50_000)
-    out = run_lines(s, ["paste 1000", "gen 400", ""])
+    out = run_lines(s, ["user 1000", "assistant 400", ""])
     assert s.turn_index == 1
     # The cached 50K prefix is read, not rewritten.
     assert s.state.cached_tokens >= 50_000
@@ -95,13 +95,13 @@ def test_warm_turn_reads_cached_prefix(config):
 
 def test_post_advance_turn_is_cold_resume(config):
     s = warm_session(config, prefix=50_000)
-    out = run_lines(s, ["advance 10m", "paste 1200", "gen 500", ""])
+    out = run_lines(s, ["advance 10m", "user 1200", "assistant 500", ""])
     assert any("cold resume" in line for line in out)
 
 
 def test_quit_in_file_sets_done(config):
     s = warm_session(config)
-    out = run_lines(s, ["paste 100", "", "quit", "paste 999"])
+    out = run_lines(s, ["user 100", "", "quit", "user 999"])
     assert s.done is True
     assert any("bye" in line for line in out)
     # The line after quit never ran (run loop broke on session.done).

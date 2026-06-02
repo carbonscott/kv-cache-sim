@@ -11,17 +11,17 @@
 #
 # --- Turn 1: open a big context. Nothing is cached yet, so this is all write --
 # the price we pay once to seed the prefix.
-paste 40000
-gen 500
+user 40000
+assistant 500
 
 # --- Turn 2: a warm follow-up. The prefix is cached, so we mostly read (cheap)
 # and only write the new tokens. Hit ratio should be high.
-paste 1500
-gen 600
+user 1500
+assistant 600
 
 # --- Turn 3: still warm, ratio climbs further.
-paste 1000
-gen 400
+user 1000
+assistant 400
 
 # --- Claude Code upgrades mid-session. We are still inside the 5-minute TTL, but
 # the new system prompt invalidates the whole cache (applies immediately, like
@@ -29,12 +29,12 @@ gen 400
 upgrade
 # --- Turn 4: the post-upgrade turn. Expect hit% = 0 and a full write of the whole
 # rebuilt prefix -- the most expensive request in the session.
-paste 1200
-gen 500
+user 1200
+assistant 500
 
 # --- Turn 5: warm again on the freshly rebuilt prefix; hits return.
-paste 800
-gen 400
+user 800
+assistant 400
 
 # --- Done.
 quit

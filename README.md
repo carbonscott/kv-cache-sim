@@ -1,7 +1,7 @@
 # kv-cache-sim
 
 A simulator of a **Claude Code-like interactive session's prompt-cache state and cost**.
-You paste prompts, fake tool calls, advance a simulated clock, and watch the per-turn
+You feed in user prompts, fake tool calls, advance a simulated clock, and watch the per-turn
 cache hit/miss split and dollar cost evolve — **without calling any real LLM API**.
 
 The point is to make the *consequences* of cache lifecycle events tangible: a TTL expiry
@@ -78,9 +78,9 @@ commits the pending turn; `#` lines are comments):
 
 | Command | Effect |
 |---|---|
-| `paste <n \| text>` | add user-input tokens to the pending turn |
+| `user <n \| text>` | add user-input tokens to the pending turn |
 | `tool <name> <n>` | add a fake tool-result of `n` tokens |
-| `gen <n \| text>` | add assistant-output tokens |
+| `assistant <n \| text>` | add assistant-output tokens |
 | `send` (or blank line) | commit the pending turn |
 | `advance <90s\|6m\|1h>` | jump the simulated clock |
 | `model <name>` / `effort <level>` | switch model/effort (invalidates the cache) |

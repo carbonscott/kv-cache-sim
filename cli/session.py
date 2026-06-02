@@ -1,7 +1,7 @@
 """The shared command session: parse a command line, drive the engine, return output.
 
 This is the core both front-ends use. A turn is *accumulated* from one or more
-`paste` / `tool` / `gen` commands and committed as a single Turn by `send` (or a
+`user` / `tool` / `assistant` commands and committed as a single Turn by `send` (or a
 blank line) -- mirroring how a real Claude Code request bundles user input, several
 tool results, and one generation into one request.
 
@@ -31,9 +31,9 @@ from sim.tokenizer import count_tokens, is_approximate
 from . import ledger
 
 HELP = """commands:
-  paste <n | text...>     add user-input tokens to the pending turn
+  user <n | text...>      add user-input tokens to the pending turn
   tool <name> <n>         add a fake tool-result of n tokens to the pending turn
-  gen <n | text...>       add assistant-output tokens to the pending turn
+  assistant <n | text...> add assistant-output tokens to the pending turn
   send                    commit the pending turn (a blank line does the same)
   advance <dur>           jump the clock (e.g. 90s, 6m, 1h, or bare seconds)
   rewind <to_tokens>      truncate back to an earlier prefix length (re-hits in TTL)
@@ -45,6 +45,14 @@ HELP = """commands:
   status                  show current session state and the pending turn
   help                    show this help
   quit | exit             leave the session"""
+
+# The canonical list of top-level command verbs, used by the REPL's Tab
+# completer. Kept in sync with the if/elif chain in Session.handle().
+COMMAND_NAMES = (
+    "user", "tool", "assistant", "send", "advance", "rewind", "compact",
+    "clear-tools", "model", "effort", "upgrade", "status", "help",
+    "quit", "exit",
+)
 
 _DURATION = re.compile(r"^(\d+)\s*([smh]?)$")
 _UNIT_SECONDS = {"": 1, "s": 1, "m": 60, "h": 3600}
@@ -132,12 +140,12 @@ class Session:
             return self._status()
         if command == "send":
             return self._commit_turn()
-        if command == "paste":
-            return self._paste(args)
+        if command == "user":
+            return self._user(args)
         if command == "tool":
             return self._tool(args)
-        if command == "gen":
-            return self._gen(args)
+        if command == "assistant":
+            return self._assistant(args)
         if command == "advance":
             return self._advance(args)
         if command == "rewind":
@@ -154,9 +162,9 @@ class Session:
             return self._apply(Upgrade())
         return [f"unknown command: {command!r} (try 'help')"]
 
-    def _paste(self, args: list[str]) -> list[str]:
+    def _user(self, args: list[str]) -> list[str]:
         if not args:
-            return ["usage: paste <n | text...>"]
+            return ["usage: user <n | text...>"]
         added = _tokens_or_text(" ".join(args), self.encoding)
         self.pending_input += added
         return [f"+{added} input tok (pending turn: in={self.pending_input}, "
@@ -171,9 +179,9 @@ class Session:
         return [f"+{added} tool-result tok from {name!r} "
                 f"(pending turn: in={self.pending_input}, out={self.pending_output})"]
 
-    def _gen(self, args: list[str]) -> list[str]:
+    def _assistant(self, args: list[str]) -> list[str]:
         if not args:
-            return ["usage: gen <n | text...>"]
+            return ["usage: assistant <n | text...>"]
         added = _tokens_or_text(" ".join(args), self.encoding)
         self.pending_output += added
         return [f"+{added} output tok (pending turn: in={self.pending_input}, "

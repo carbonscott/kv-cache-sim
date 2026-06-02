@@ -59,9 +59,9 @@ def test_parse_duration_rejects_junk():
 
 def test_accumulate_then_send_builds_one_turn(config):
     s = warm_session(config, prefix=50_000)
-    s.handle("paste 1000")          # user input
+    s.handle("user 1000")          # user input
     s.handle("tool read_file 1500") # a fake tool result
-    s.handle("gen 400")             # assistant output
+    s.handle("assistant 400")             # assistant output
     assert s.pending_input == 2_500
     assert s.pending_output == 400
 
@@ -74,7 +74,7 @@ def test_accumulate_then_send_builds_one_turn(config):
 
 def test_blank_line_commits_like_send(config):
     s = warm_session(config)
-    s.handle("paste 1000")
+    s.handle("user 1000")
     s.handle("")  # blank line == send
     assert s.turn_index == 1
     assert s.pending_input == 0
@@ -87,9 +87,9 @@ def test_send_with_empty_pending_does_nothing(config):
     assert any("nothing to send" in line for line in out)
 
 
-def test_paste_text_uses_tokenizer(config):
+def test_user_text_uses_tokenizer(config):
     s = warm_session(config)
-    s.handle("paste hello world this is some prose to tokenize")
+    s.handle("user hello world this is some prose to tokenize")
     # Non-numeric -> tokenized; should be a small positive count, not the literal words.
     assert s.pending_input > 0
 
@@ -99,7 +99,7 @@ def test_paste_text_uses_tokenizer(config):
 def test_advance_then_send_triggers_cold_resume(config):
     s = warm_session(config, prefix=50_000)  # 300s TTL
     s.handle("advance 10m")                  # > TTL
-    s.handle("paste 1000")
+    s.handle("user 1000")
     out = s.handle("send")
     assert any("cold resume" in line for line in out)
 
@@ -149,7 +149,7 @@ def test_upgrade_parses_and_invalidates(config):
 def test_turn_after_upgrade_pays_full(config):
     s = warm_session(config, prefix=50_000)
     s.handle("upgrade")
-    s.handle("paste 1000")
+    s.handle("user 1000")
     out = s.handle("send")
     # The post-upgrade turn is a full rebuild: no hits, the whole prefix rewritten.
     assert s.state.cached_tokens == 51_000
@@ -162,9 +162,9 @@ def test_turn_after_upgrade_pays_full(config):
 
 def test_rewind_parses_and_re_hits(config):
     s = warm_session(config, prefix=50_000)
-    s.handle("paste 2000")
+    s.handle("user 2000")
     s.handle("send")              # turn 1
-    s.handle("paste 1000")
+    s.handle("user 1000")
     s.handle("send")              # turn 2
     cached_before = s.state.cached_tokens
     assert cached_before > 30_000
@@ -176,7 +176,7 @@ def test_rewind_parses_and_re_hits(config):
     assert any("re-hit" in line for line in out)            # note appears
 
     # A subsequent turn shows a cache hit against the rewound prefix.
-    s.handle("paste 1000")
+    s.handle("user 1000")
     out = s.handle("send")
     assert s.state.cached_tokens == 31_000
     assert not any("  0%" in line for line in out)  # hit% is non-zero
@@ -218,7 +218,7 @@ def test_compact_parses_and_re_anchors(config):
     assert s.state.cached_tokens == 8_000                        # protected prefix kept
 
     # A subsequent turn re-hits the protected prefix (non-zero hit%).
-    s.handle("paste 1000")
+    s.handle("user 1000")
     out = s.handle("send")
     assert not any("  0%" in line for line in out)
 
@@ -245,7 +245,7 @@ def test_clear_tools_parses_and_invalidates(config):
     assert s.state.cached_tokens == 8_000
 
     # A subsequent turn re-hits the protected prefix (non-zero hit%).
-    s.handle("paste 1000")
+    s.handle("user 1000")
     out = s.handle("send")
     assert not any("  0%" in line for line in out)
 

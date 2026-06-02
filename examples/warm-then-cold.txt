@@ -11,37 +11,37 @@
 #
 # --- Turn 1: open a big context. Nothing is cached yet, so this is all
 # write -- the price we pay once to seed the prefix.
-paste 50000
-gen 500
+user 50000
+assistant 500
 
 # --- Turn 2: a warm follow-up. The 50K prefix is cached, so we mostly
 # read (cheap) and only write the new tokens. Hit ratio should be high.
-paste 1500
+user 1500
 tool read_file 1200
-gen 600
+assistant 600
 
 # --- Turn 3: still warm, ratio climbs further as the cached prefix grows.
-paste 1000
-gen 400
+user 1000
+assistant 400
 
 # --- Idle 10 minutes: past the 5-minute TTL, so the cache goes cold.
 # (advance applies immediately -- no blank line / commit needed after it.)
 advance 10m
 # --- Turn 4: cold resume. The prefix has to be rebuilt from scratch --
 # expect a "cold resume" note and a cost spike.
-paste 1200
-gen 500
+user 1200
+assistant 500
 
 # --- Turn 5: warm again on the freshly rebuilt prefix.
-paste 800
-gen 400
+user 800
+assistant 400
 
 # --- Switch models: this invalidates the cache (the new model can't reuse
 # the old prefix). Like advance, it applies immediately.
 model sonnet-4.6
 # --- Turn 6: rebuild on the new model -- another full write.
-paste 1000
-gen 700
+user 1000
+assistant 700
 
 # --- Done.
 quit

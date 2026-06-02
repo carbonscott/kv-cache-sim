@@ -13,7 +13,7 @@ from typing import Union
 @dataclass(frozen=True)
 class Turn:
     """One request/response. input_tokens is everything appended to context this
-    turn (a pasted user prompt and/or a fake tool-result size); output_tokens is
+    turn (a user prompt and/or a fake tool-result size); output_tokens is
     the assistant's generation."""
 
     input_tokens: int

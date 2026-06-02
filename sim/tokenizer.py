@@ -1,4 +1,4 @@
-"""Token counting for pasted text.
+"""Token counting for user-supplied text.
 
 Uses a tiktoken encoding (default o200k_base, set via config.tokenizer). This is an
 *approximation* -- o200k_base is OpenAI's tokenizer; Anthropic does not publish a
