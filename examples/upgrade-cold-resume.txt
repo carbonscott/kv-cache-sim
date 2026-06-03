@@ -7,34 +7,36 @@
 # whole history now sits behind a different prefix -- no hits at all.
 #
 # The session starts cold on the first config model (opus-4.8) with an empty
-# prefix. Blank lines commit the pending turn; `#` lines are comments.
+# prefix. `user` appends are free; `call <out>` is the one billed API request.
+# `#` lines are comments and blank lines are no-ops. These turns call no tools,
+# so each is a single call.
 #
-# --- Turn 1: open a big context. Nothing is cached yet, so this is all write --
+# --- Call 1: open a big context. Nothing is cached yet, so this is all write --
 # the price we pay once to seed the prefix.
 user 40000
-assistant 500
+call 500
 
-# --- Turn 2: a warm follow-up. The prefix is cached, so we mostly read (cheap)
+# --- Call 2: a warm follow-up. The prefix is cached, so we mostly read (cheap)
 # and only write the new tokens. Hit ratio should be high.
 user 1500
-assistant 600
+call 600
 
-# --- Turn 3: still warm, ratio climbs further.
+# --- Call 3: still warm, ratio climbs further.
 user 1000
-assistant 400
+call 400
 
 # --- Claude Code upgrades mid-session. We are still inside the 5-minute TTL, but
 # the new system prompt invalidates the whole cache (applies immediately, like
-# advance / model -- no commit needed).
+# advance / model -- no call needed).
 upgrade
-# --- Turn 4: the post-upgrade turn. Expect hit% = 0 and a full write of the whole
+# --- Call 4: the post-upgrade call. Expect hit% = 0 and a full write of the whole
 # rebuilt prefix -- the most expensive request in the session.
 user 1200
-assistant 500
+call 500
 
-# --- Turn 5: warm again on the freshly rebuilt prefix; hits return.
+# --- Call 5: warm again on the freshly rebuilt prefix; hits return.
 user 800
-assistant 400
+call 400
 
 # --- Done.
 quit

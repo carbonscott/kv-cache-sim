@@ -44,7 +44,7 @@ uv run scripts/run_scripted.py
 # Interactive REPL: drive a session live
 uv run scripts/run_repl.py
 
-# Tests (58 passing)
+# Tests (83 passing)
 uv run pytest
 ```
 
@@ -54,35 +54,38 @@ Running `examples/warm-then-cold.txt` — a session that warms up, goes idle pas
 and rebuilds:
 
 ```
- #  event                           read   write    out  hit%    turn $   total $
+ #  event                           read   write    out  hit%    call $   total $
 ---------------------------------------------------------------------------------
- 1  Turn(in=50000, out=500)            0   50000    500    0%   0.32500   0.32500
- 2  Turn(in=2700, out=600)         50000    3200    600   94%   0.06000   0.38500
- 3  Turn(in=1000, out=400)         53200    1600    400   97%   0.04660   0.43160
- 4  Advance(600s)                      0       0      0    0%   0.00000   0.43160
- 5  Turn(in=1200, out=500)             0   56400    500    0%   0.36500   0.79660
+ 1  Call(in=50000, out=500)            0   50000    500    0%   0.32500   0.32500
+ 2  Call(in=1500, out=50)          50000    2000     50   96%   0.03875   0.36375
+ 3  Call(in=1200, out=600)         52000    1250    600   98%   0.04881   0.41256
+ 4  Call(in=1000, out=400)         53250    1600    400   97%   0.04662   0.45919
+ 5  Advance(600s)                      0       0      0    0%   0.00000   0.45919
+ 6  Call(in=1200, out=500)             0   56450    500    0%   0.36531   0.82450
       - cold resume: idle past TTL, full rebuild
- 6  Turn(in=800, out=400)          56400    1300    400   98%   0.04632   0.84292
- 7  SwitchModel(sonnet-4.6)            0       0      0    0%   0.00000   0.84292
+ 7  Call(in=800, out=400)          56450    1300    400   98%   0.04635   0.87085
+ 8  SwitchModel(sonnet-4.6)            0       0      0    0%   0.00000   0.87085
       - switched model to sonnet-4.6; cache invalidated (rebuild next turn)
- 8  Turn(in=1000, out=700)             0   59100    700    0%   0.23212   1.07505
+ 9  Call(in=1000, out=700)             0   59150    700    0%   0.23231   1.10316
 ```
 
-Turn 1 pays a full write to seed a 50K-token prefix. Turns 2–3 mostly *read* the cached
-prefix (cheap — hit ratio climbs to 97%). After a 10-minute idle the cache is cold, so
-turn 5 rebuilds at a cost spike. The model switch on turn 7 invalidates the cache again.
+Each API call is the atomic billed unit. Call 1 pays a full write to seed a 50K-token
+prefix. Calls 3–4 mostly *read* the cached prefix (cheap — hit ratio climbs to 97%).
+Call 2 is the small tool-requesting generation (`call 50 tu=1`); call 3 is the answer
+after the tool result comes back. After a 10-minute idle the cache is cold, so call 6
+rebuilds at a cost spike. The model switch on call 8 invalidates the cache again.
 
 ## REPL commands
 
-The same grammar drives the REPL and the batch files (one command per line; blank line
-commits the pending turn; `#` lines are comments):
+The same grammar drives the REPL and the batch files (one command per line; `#` lines are
+comments; blank lines are no-ops). The API **call** is the atomic billed unit — `user` and
+`tool` are free local appends, and `call` is the one event that issues a request:
 
 | Command | Effect |
 |---|---|
-| `user <n \| text>` | add user-input tokens to the pending turn |
-| `tool <name> <n>` | add a fake tool-result of `n` tokens |
-| `assistant <n \| text>` | add assistant-output tokens |
-| `send` (or blank line) | commit the pending turn |
+| `user <n \| text>` | append user-input tokens to the pending call (free; +1 block) |
+| `tool <name> <n>` | append a fake tool-result of `n` tokens (free; +1 block) |
+| `call <out> [tu=N]` | issue one API request: bill the accumulated input, emit `<out>` output tokens in `max(1, N)` blocks, then reset the pending input |
 | `advance <90s\|6m\|1h>` | jump the simulated clock |
 | `model <name>` / `effort <level>` | switch model/effort (invalidates the cache) |
 | `compact <summary_tokens>` | replace the conversation layer with a summary |
@@ -102,7 +105,7 @@ A bare integer is a token count; anything else is tokenized as text.
 | `scripts/` | entry points: `run_repl.py`, `run_batch.py`, `run_scripted.py`. |
 | `config/models.json` | all model data — pricing, TTLs, minimums, breakpoint knobs. |
 | `examples/` | self-documenting batch scripts that double as tests. |
-| `tests/` | 58 tests (engine bookkeeping, session grammar, batch runs). |
+| `tests/` | 83 tests (engine bookkeeping, session grammar, batch runs). |
 
 ## How it's built
 

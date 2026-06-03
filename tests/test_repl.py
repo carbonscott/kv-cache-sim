@@ -22,13 +22,21 @@ def test_single_match():
 
 
 def test_prefix_with_multiple_hits():
-    # "c" matches both (in COMMAND_NAMES order), and the hyphenated command is
+    # "c" matches all three (in COMMAND_NAMES order), and the hyphenated command is
     # offered whole rather than split at the '-'.
-    assert command_completions("c", "c") == ["compact", "clear-tools"]
+    assert command_completions("c", "c") == ["call", "compact", "clear-tools"]
 
 
 def test_empty_lists_all_commands():
     assert command_completions("", "") == list(COMMAND_NAMES)
+
+
+def test_call_grammar_replaces_assistant_and_send():
+    # The call-as-atom grammar swap: `call` is a completion; the old lumped-turn
+    # verbs `assistant`/`send` are gone.
+    assert "call" in COMMAND_NAMES
+    assert "assistant" not in COMMAND_NAMES
+    assert "send" not in COMMAND_NAMES
 
 
 def test_no_completion_past_the_command_word():

@@ -1,0 +1,85 @@
+# opusplan-split-escalation.txt -- the PESSIMISTIC opusplan case (the failure tail).
+#
+# Plan on Opus, hand to Sonnet -- but Sonnet struggles: it takes more turns and
+# more tokens (modeled here by hand as 6 turns of in=800/out=2000), produces a
+# wrong result, and the work is handed BACK to Opus to redo cleanly.
+#
+# NOTE: the simulator prices tokens; it does not invent flailing. The extra
+# turns and inflated counts below are OUR assumption about what struggling costs.
+# What the sim shows rigorously is the cache tax: TWO rebuilds, opus->sonnet AND
+# sonnet->opus, the second on a context Sonnet bloated to ~52K.
+#
+# `user`/`tool` are free local appends; `call <out> [tu=N]` is the one billed API
+# request. Each tool turn is TWO calls (a ~50-tok tool_use call, then the answer).
+
+# --- Turn 1: plan on Opus: a tool_use call to Read 30K, then the 3K plan.
+user 2000
+call 50 tu=1
+tool Read 30000
+call 3000
+
+# --- Hand off to Sonnet (cache invalidated; rebuild on the next call).
+model sonnet-4.6
+
+# --- Turns 2-7: Sonnet's struggling attempt. More re-reading (in=800), more
+# verbose output (out=2000), and six turns instead of four. The first Sonnet call
+# pays the first full rebuild.
+user 800
+call 50 tu=1
+tool Read 100
+call 2000
+
+user 800
+call 50 tu=1
+tool Read 100
+call 2000
+
+user 800
+call 50 tu=1
+tool Read 100
+call 2000
+
+user 800
+call 50 tu=1
+tool Read 100
+call 2000
+
+user 800
+call 50 tu=1
+tool Read 100
+call 2000
+
+user 800
+call 50 tu=1
+tool Read 100
+call 2000
+
+# --- It's wrong. Escalate back to Opus. SwitchModel invalidates AGAIN, so the
+# next Opus call rewrites the now ~52K (Sonnet-bloated) prefix at Opus 1.25x --
+# the single most expensive event in the run.
+model opus-4.8
+
+# --- Turns 8-11: Opus redoes the implementation cleanly -- the same work the
+# baseline did, now stacked on top of everything above.
+user 500
+call 50 tu=1
+tool Read 100
+call 1500
+
+user 500
+call 50 tu=1
+tool Read 100
+call 1500
+
+user 500
+call 50 tu=1
+tool Read 100
+call 1500
+
+user 500
+call 50 tu=1
+tool Read 100
+call 1500
+
+status
+quit
