@@ -45,6 +45,7 @@ HELP = """commands:
   effort <level>          switch effort level (invalidates the cache)
   upgrade                 simulate a CC upgrade (invalidates the cache, even in TTL)
   status                  show current session state and the pending turn
+  reset                   wipe everything back to a fresh cold session
   help                    show this help
   quit | exit             leave the session"""
 
@@ -52,7 +53,7 @@ HELP = """commands:
 # completer. Kept in sync with the if/elif chain in Session.handle().
 COMMAND_NAMES = (
     "user", "tool", "assistant", "send", "advance", "ttl", "rewind", "compact",
-    "clear-tools", "model", "effort", "upgrade", "status", "help",
+    "clear-tools", "model", "effort", "upgrade", "status", "reset", "help",
     "quit", "exit",
 )
 
@@ -78,6 +79,20 @@ def _tokens_or_text(arg: str, encoding: str) -> int:
     return count_tokens(arg, encoding)
 
 
+def default_state(config: Config) -> CacheState:
+    """A fresh, cold session on the first model in the config at 5-minute TTL."""
+    first_model = next(iter(config.models))
+    return CacheState(
+        model=first_model,
+        effort="high",
+        ttl_seconds=config.ttl_seconds["5m"],
+        last_used=0.0,
+        now=0.0,
+        prefix_tokens=0,
+        cached_tokens=0,
+    )
+
+
 class Session:
     """Holds engine state, the running cost, and the pending (uncommitted) turn."""
 
@@ -92,6 +107,7 @@ class Session:
         self.pending_input_blocks = 0
         self.pending_output_blocks = 0
         self.done = False
+        self.just_reset = False  # set by `reset`; the REPL checks it to reprint its banner
 
     # -- pending-turn helpers ------------------------------------------------
 
@@ -149,6 +165,8 @@ class Session:
             return [HELP]
         if command == "status":
             return self._status()
+        if command == "reset":
+            return self._reset()
         if command == "send":
             return self._commit_turn()
         if command == "user":
@@ -252,6 +270,20 @@ class Session:
         if not args:
             return ["usage: effort <level>"]
         return self._apply(SwitchEffort(effort=args[0]))
+
+    def _reset(self) -> list[str]:
+        """Wipe the run back to a fresh cold session, as if the app were relaunched.
+        Keeps config/encoding (and stays running); the REPL reprints its banner via
+        the just_reset flag."""
+        self.state = default_state(self.config)
+        self.running_total = 0.0
+        self.turn_index = 0
+        self.pending_input = 0
+        self.pending_output = 0
+        self.pending_input_blocks = 0
+        self.pending_output_blocks = 0
+        self.just_reset = True
+        return ["session reset to a fresh cold session."]
 
     def _status(self) -> list[str]:
         lines = [ledger.status_line(self.state, self.running_total)]

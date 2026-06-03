@@ -15,7 +15,7 @@ from sim.config import Config
 from sim.state import CacheState
 
 from . import ledger
-from .session import COMMAND_NAMES, Session
+from .session import COMMAND_NAMES, Session, default_state  # re-exported for callers
 
 
 def command_completions(text: str, line: str) -> list[str]:
@@ -35,20 +35,6 @@ def _make_completer():
     return completer
 
 
-def default_state(config: Config) -> CacheState:
-    """A fresh, cold session on the first model in the config at 5-minute TTL."""
-    first_model = next(iter(config.models))
-    return CacheState(
-        model=first_model,
-        effort="high",
-        ttl_seconds=config.ttl_seconds["5m"],
-        last_used=0.0,
-        now=0.0,
-        prefix_tokens=0,
-        cached_tokens=0,
-    )
-
-
 def run(state: CacheState, config: Config) -> None:
     """Run the REPL until the user quits or sends EOF."""
     session = Session(state, config)
@@ -60,10 +46,14 @@ def run(state: CacheState, config: Config) -> None:
         readline.set_completer(_make_completer())
         readline.parse_and_bind("tab: complete")
 
-    print("cache-sim REPL -- type 'help' for commands, 'quit' to leave.")
-    print(ledger.status_line(session.state, session.running_total))
-    print(ledger.HEADER)
-    print(ledger.SEPARATOR)
+    def print_intro():
+        """The opening banner + ledger header; shown at startup and after a reset."""
+        print("cache-sim REPL -- type 'help' for commands, 'quit' to leave.")
+        print(ledger.status_line(session.state, session.running_total))
+        print(ledger.HEADER)
+        print(ledger.SEPARATOR)
+
+    print_intro()
 
     while not session.done:
         try:
@@ -73,3 +63,6 @@ def run(state: CacheState, config: Config) -> None:
             break
         for out in session.handle(line):
             print(out)
+        if session.just_reset:
+            print_intro()
+            session.just_reset = False
