@@ -37,8 +37,12 @@ def config():
     return load_config(CONFIG_PATH)
 
 
-def warm_state(config, model="sonnet-4.6", prefix=50_000, ttl_key="5m"):
-    """A warm session with `prefix` tokens already cached at time 0."""
+def warm_state(config, model="sonnet-4.6", prefix=50_000, ttl_key="5m", blocks=0):
+    """A warm session with `prefix` tokens already cached at time 0.
+
+    prefix_blocks == cached_blocks == blocks, so a turn applied on top has a block
+    distance equal to its own input_blocks (the warm trailing breakpoint sits at `blocks`).
+    """
     ttl = config.ttl_seconds[ttl_key]
     return CacheState(
         model=model,
@@ -48,6 +52,8 @@ def warm_state(config, model="sonnet-4.6", prefix=50_000, ttl_key="5m"):
         now=0.0,
         prefix_tokens=prefix,
         cached_tokens=prefix,
+        prefix_blocks=blocks,
+        cached_blocks=blocks,
     )
 
 
@@ -309,8 +315,11 @@ def test_rewind_to_at_or_past_current_prefix_is_noop(config):
 
 # -- Stage 3: compact --------------------------------------------------------
 
-def layered_warm_state(config, system=8_000, prefix=50_000, ttl_key="5m"):
-    """A warm session with a protected leading prefix of `system` tokens."""
+def layered_warm_state(config, system=8_000, prefix=50_000, ttl_key="5m", blocks=0):
+    """A warm session with a protected leading prefix of `system` tokens.
+
+    prefix_blocks == cached_blocks == blocks, so a turn's block distance equals its own
+    input_blocks (parallel to warm_state)."""
     return CacheState(
         model="sonnet-4.6",
         effort="high",
@@ -320,6 +329,8 @@ def layered_warm_state(config, system=8_000, prefix=50_000, ttl_key="5m"):
         prefix_tokens=prefix,
         cached_tokens=prefix,
         system_tokens=system,
+        prefix_blocks=blocks,
+        cached_blocks=blocks,
     )
 
 
@@ -410,49 +421,62 @@ def test_clear_more_than_conversation_layer_is_noop(config):
 # -- Stage 3: 20-block walk-back ---------------------------------------------
 
 def test_walk_back_normal_turn_still_hits(config):
-    """A turn that adds less than the walk-back window reads the whole cached prefix,
+    """A turn that adds fewer than the window's blocks reads the whole cached prefix,
     exactly as Stage 1 (backward compatibility)."""
-    assert config.walkback_window_tokens == 20_000
+    assert config.walkback_window_blocks == 20
     state = warm_state(config, prefix=50_000)
-    _, cost = apply_event(state, Turn(input_tokens=2_000, output_tokens=0), config)
+    _, cost = apply_event(
+        state, Turn(input_tokens=2_000, output_tokens=0, input_blocks=2), config
+    )
     assert cost.read_tokens == 50_000
 
 
 def test_walk_back_input_exactly_at_window_still_hits(config):
-    """New content exactly equal to the window is still reachable (<= boundary)."""
+    """A turn adding exactly the window's blocks is still reachable (<= boundary)."""
     state = warm_state(config, prefix=50_000)
     _, cost = apply_event(
-        state, Turn(input_tokens=config.walkback_window_tokens, output_tokens=0), config
+        state,
+        Turn(input_tokens=2_000, output_tokens=0,
+             input_blocks=config.walkback_window_blocks),
+        config,
     )
     assert cost.read_tokens == 50_000
 
 
 def test_walk_back_huge_single_turn_jump_is_a_full_miss(config):
-    """A single turn whose new content exceeds the walk-back window pushes the trailing
-    breakpoint out of reach: the lookback misses and the whole prefix is rewritten."""
-    state = warm_state(config, prefix=50_000)  # trailing breakpoint at 50K
-    big = config.walkback_window_tokens + 5_000  # 25K > 20K window
-    new_state, cost = apply_event(state, Turn(input_tokens=big, output_tokens=0), config)
+    """A single turn whose block count exceeds the window pushes the trailing breakpoint
+    out of reach: the lookback misses and the whole prefix is rewritten -- even though the
+    turn's token count is tiny (the miss is block-driven, not token-driven)."""
+    state = warm_state(config, prefix=50_000)  # trailing breakpoint at 50K, block 0
+    # 24 blocks > 20-block window, but only 12k tokens (mirrors the fanout-n12 cliff).
+    new_state, cost = apply_event(
+        state, Turn(input_tokens=12_000, output_tokens=0, input_blocks=24), config
+    )
 
     assert cost.read_tokens == 0
-    assert cost.write_tokens == 50_000 + big       # whole prefix + new input rewritten
+    assert cost.write_tokens == 50_000 + 12_000    # whole prefix + new input rewritten
     assert cost.cache_hit_ratio == 0.0
     assert any("walk-back" in n for n in cost.notes)
     # The turn still establishes a fresh cache entry at the new end.
-    assert new_state.cached_tokens == 50_000 + big
+    assert new_state.cached_tokens == 50_000 + 12_000
+    assert new_state.cached_blocks == 24
 
 
 def test_walk_back_huge_jump_falls_back_to_anchored_breakpoint(config):
-    """In a layered session the trailing breakpoint is missed on a huge jump, but the
-    anchored protected-prefix breakpoint is a kept entry that still re-hits -- a partial
-    hit, not a full miss."""
+    """In a layered session the trailing breakpoint is missed on a huge-block jump, but
+    the anchored protected-prefix breakpoint is a kept entry that still re-hits -- a
+    partial hit, not a full miss."""
     state = layered_warm_state(config, system=8_000, prefix=50_000)
     # One normal turn establishes the anchored + trailing breakpoints.
-    state, _ = apply_event(state, Turn(input_tokens=1_000, output_tokens=0), config)
+    state, _ = apply_event(
+        state, Turn(input_tokens=1_000, output_tokens=0, input_blocks=1), config
+    )
     assert state.breakpoints == (8_000, 51_000)
 
-    big = config.walkback_window_tokens + 5_000  # 25K > 20K window
-    _, cost = apply_event(state, Turn(input_tokens=big, output_tokens=0), config)
+    # 24 blocks since the trailing breakpoint > 20-block window.
+    _, cost = apply_event(
+        state, Turn(input_tokens=12_000, output_tokens=0, input_blocks=24), config
+    )
     assert cost.read_tokens == 8_000              # anchored protected prefix still hits
-    assert cost.write_tokens == (51_000 - 8_000) + big
+    assert cost.write_tokens == (51_000 - 8_000) + 12_000
     assert any("walk-back" in n for n in cost.notes)

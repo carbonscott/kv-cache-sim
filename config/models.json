@@ -10,7 +10,7 @@
   },
   "tokenizer": "o200k_base",
   "max_breakpoints": 2,
-  "walkback_window_tokens": 20000,
+  "walkback_window_blocks": 20,
   "models": {
     "opus-4.8":   { "base_input": 5.0,  "output": 25.0, "min_cacheable": 1024 },
     "opus-4.7":   { "base_input": 5.0,  "output": 25.0, "min_cacheable": 4096 },

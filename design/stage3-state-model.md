@@ -102,28 +102,29 @@ state changes.
 | `/compact` | Keep `system_tokens`; shrink the conversation layer to a summary. **Costed request** (Q2): the summary generation bills a cheap read of the warm prefix plus the summary as output, then re-anchors to the protected prefix. | **built** |
 | `/rewind` | Jump `prefix_tokens` / `cached_tokens` back to an earlier breakpoint, re-hitting it. Zero immediate cost (re-hits within TTL, matching the `/rewind` precedent). | **built** |
 | Context-edit / clearing | Invalidate downstream of a mid-prefix offset (only the protected prefix survives); gated by `clear_at_least` = the model's `min_cacheable`. Zero immediate cost; the next Turn rewrites the suffix. | **built** |
-| 20-block walk-back | Hit length = the highest reachable live breakpoint: the trailing one if the new content is within a token-distance window (`walkback_window_tokens`), else the anchored protected prefix (partial hit), else 0 (full miss). | **built** |
+| 20-block walk-back | Hit length = the highest reachable live breakpoint: the trailing one if the new content is within the block-distance window (`prospective_blocks - cached_blocks <= walkback_window_blocks`), else the anchored protected prefix (partial hit), else 0 (full miss). | **built** |
 
 ## 6. Walk-back fidelity — recommendation
 
 When the walk-back event is built, the 20-block window can be modeled two ways:
 
-1. **Token-distance approximation (recommended).** Treat the window as a token distance
-   (≈ the size of 20 cache blocks) and check whether a miss falls within that distance
-   of a live breakpoint. This stays consistent with Stage 1's token-based spirit and the
+1. **Token-distance approximation (initially recommended).** Treat the window as a token
+   distance (≈ the size of 20 cache blocks) and check whether a miss falls within that
+   distance of a live breakpoint. Stays consistent with Stage 1's token-based spirit and the
    "keep it simple" guideline — no new block bookkeeping in the state.
-2. **Discrete-block tracking (alternative).** Track cache blocks explicitly and walk back
-   block-by-block. Higher fidelity to `research/02 §1`, but adds a block layer to the
-   state that nothing else needs yet.
+2. **Discrete-block tracking (built).** Track cache blocks explicitly and walk back
+   block-by-block. Higher fidelity to `research/02 §1`; it adds a block layer to the state,
+   but that layer is what makes the cliff provably block-driven rather than a token proxy.
 
-**Finalized: option 1 (token-distance) is built**, carried by a `walkback_window_tokens`
-config knob (default 20,000 ≈ 20 cache blocks at a rough ~1K tokens/block; tunable in
-`config/models.json`). The hit length is the highest live breakpoint the new request can
-reach, where the two breakpoints reach differently:
+**Finalized: option 2 (discrete-block tracking) is built**, superseding the original
+token-distance recommendation. The state carries `prefix_blocks`/`cached_blocks` alongside the
+token counts (see `state.py`), and the window is a `walkback_window_blocks` config knob
+(default 20; tunable in `config/models.json`). The hit length is the highest live breakpoint
+the new request can reach, where the two breakpoints reach differently:
 
 - the **trailing** breakpoint (at `cached_tokens`) is reached only if the new content
-  since it is within the window (`prospective_prefix - cached_tokens ≤ window`) — the
-  auto-advancing breakpoint walked back to;
+  since it is within the window (`prospective_blocks - cached_blocks ≤ walkback_window_blocks`)
+  — the auto-advancing breakpoint walked back to;
 - the **anchored** breakpoint (at `system_tokens`) is a *kept* `cache_control` entry over
   system + tools, hit directly whenever that prefix is unchanged and warm — **independent
   of the window**.

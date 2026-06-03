@@ -30,7 +30,7 @@ class Config:
     tokenizer: str                   # recorded for Stage 2; unused in Stage 1
     models: dict[str, ModelPricing]
     max_breakpoints: int = 2         # breakpoints CC keeps (anchored + trailing); Stage 3
-    walkback_window_tokens: int = 20_000  # token-distance approx of the 20-block lookback
+    walkback_window_blocks: int = 20  # the 20-content-block lookback per breakpoint
 
     def write_multiplier(self, ttl_seconds: int) -> float:
         """Pick the write multiplier that matches the active TTL.
@@ -65,7 +65,7 @@ def load_config(path: str) -> Config:
         tokenizer=data["tokenizer"],
         models=models,
         max_breakpoints=data.get("max_breakpoints", 2),
-        walkback_window_tokens=data.get("walkback_window_tokens", 20_000),
+        walkback_window_blocks=data.get("walkback_window_blocks", 20),
     )
 
 

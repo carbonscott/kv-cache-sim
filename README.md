@@ -22,8 +22,9 @@ This is an **educational approximation**, not a billing oracle:
   thresholds live in [`config/models.json`](config/models.json) precisely because Anthropic
   changes them. Re-verify before trusting any constant long-term.
 - **Some behavior is a modeled assumption, not documented fact** — e.g. exactly how many
-  cache breakpoints Claude Code sets (assumed 2) and the 20-block lookback (modeled as a
-  token-distance window). These are config knobs, flagged in the design docs.
+  cache breakpoints Claude Code sets (assumed 2) and the 20-block lookback (gated on
+  content-block distance via `walkback_window_blocks`, default 20). These are config knobs,
+  flagged in the design docs.
 - **No real API calls happen.** Tool-call output sizes are specified by you; the simulator
   fakes them to accumulate context.
 
