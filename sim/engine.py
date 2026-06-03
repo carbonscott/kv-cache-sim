@@ -60,7 +60,7 @@ def _apply_switch_model(
     the next Turn. TTL is auth-driven, not model-driven, so it is left unchanged."""
     if event.model == state.model:
         return state, CostBreakdown.zero(["model unchanged; cache kept"])
-    new_state = replace(state, model=event.model, cached_tokens=0)
+    new_state = replace(state, model=event.model, cached_tokens=0, cached_blocks=0)
     note = f"switched model to {event.model}; cache invalidated (rebuild next turn)"
     return new_state, CostBreakdown.zero([note])
 
@@ -72,7 +72,7 @@ def _apply_switch_effort(
     invalidates the whole cache. A no-op change to the current level keeps it."""
     if event.effort == state.effort:
         return state, CostBreakdown.zero(["effort unchanged; cache kept"])
-    new_state = replace(state, effort=event.effort, cached_tokens=0)
+    new_state = replace(state, effort=event.effort, cached_tokens=0, cached_blocks=0)
     note = f"switched effort to {event.effort}; cache invalidated (rebuild next turn)"
     return new_state, CostBreakdown.zero([note])
 
@@ -85,7 +85,7 @@ def _apply_upgrade(
     TTL cold resume (time-based) or SwitchModel (cache-key change), this is the
     worst case -- no hits at all even on an otherwise-warm session. The system_tokens
     boundary is left unchanged; the next Turn pays the full rebuild."""
-    new_state = replace(state, cached_tokens=0, breakpoints=())
+    new_state = replace(state, cached_tokens=0, cached_blocks=0, breakpoints=())
     note = "upgrade: system prompt changed; cache invalidated even within TTL"
     return new_state, CostBreakdown.zero([note])
 
@@ -109,10 +109,14 @@ def _apply_rewind(
     if state.is_expired:
         # The earlier entry has expired along with everything else: cold.
         new_cached = 0
+        new_cached_blocks = 0
         new_breakpoints: tuple[int, ...] = ()
         note = "cache cold (idle past TTL), full rebuild next turn"
     else:
         new_cached = min(state.cached_tokens, event.to_tokens)
+        # The surviving leading prefix re-hits, so the next turn's block distance is just
+        # its own input -- keep cached_blocks aligned with the (carried-over) prefix.
+        new_cached_blocks = state.prefix_blocks
         new_breakpoints = _maintain_breakpoints(
             min(state.system_tokens, new_cached), new_cached, config.max_breakpoints
         )
@@ -123,6 +127,7 @@ def _apply_rewind(
         prefix_tokens=event.to_tokens,
         cached_tokens=new_cached,
         breakpoints=new_breakpoints,
+        cached_blocks=new_cached_blocks,
     )
     return new_state, CostBreakdown.zero([note])
 
@@ -153,6 +158,9 @@ def _apply_compact(
     # The surviving valid leading prefix of the new sequence: the protected prefix
     # (or 0 if the summarizing turn established no cache, e.g. sub-minimum).
     post_cached = min(turn_state.cached_tokens, state.system_tokens)
+    # The surviving protected prefix re-hits (warm) unless the summarizing turn cached
+    # nothing (cold/sub-minimum); align cached_blocks with the carried-over prefix.
+    post_cached_blocks = state.prefix_blocks if post_cached > 0 else 0
     new_breakpoints = _maintain_breakpoints(
         min(state.system_tokens, post_cached), post_cached, config.max_breakpoints
     )
@@ -167,6 +175,7 @@ def _apply_compact(
         prefix_tokens=state.system_tokens + event.summary_tokens,
         cached_tokens=post_cached,
         breakpoints=new_breakpoints,
+        cached_blocks=post_cached_blocks,
         last_used=state.now,
     )
     return new_state, breakdown
@@ -206,6 +215,9 @@ def _apply_clear(
     # Only the unchanged leading prefix (up to system_tokens) stays cached; the suffix
     # downstream of the hole is invalidated and gets rewritten on the next turn.
     new_cached = min(state.cached_tokens, state.system_tokens)
+    # The surviving protected prefix re-hits; align cached_blocks with the carried-over
+    # prefix (or 0 when there is no protected prefix to keep warm).
+    new_cached_blocks = state.prefix_blocks if new_cached > 0 else 0
     new_breakpoints = _maintain_breakpoints(
         min(state.system_tokens, new_cached), new_cached, config.max_breakpoints
     )
@@ -218,6 +230,7 @@ def _apply_clear(
         prefix_tokens=state.prefix_tokens - event.freed_tokens,
         cached_tokens=new_cached,
         breakpoints=new_breakpoints,
+        cached_blocks=new_cached_blocks,
     )
     return new_state, CostBreakdown.zero([note])
 
@@ -245,6 +258,7 @@ def _apply_turn(
 
     output_tokens = event.output_tokens
     prospective_prefix = state.prefix_tokens + event.input_tokens
+    prospective_blocks = state.prefix_blocks + event.input_blocks
 
     if prospective_prefix < pricing.min_cacheable:
         # 2a. Sub-minimum: the cacheable prefix is below the model's minimum, so no
@@ -255,6 +269,7 @@ def _apply_turn(
         write_tokens = 0
         full_input_tokens = prospective_prefix
         new_cached_tokens = 0
+        new_cached_blocks = 0
         new_breakpoints: tuple[int, ...] = ()
         notes.append(
             f"sub-minimum: prefix {prospective_prefix} < min_cacheable "
@@ -265,18 +280,19 @@ def _apply_turn(
         #     breakpoint sits at the end of this turn's input, so new cached_tokens
         #     covers everything up to there; the output just produced is not yet cached.
         read_tokens = _walk_back_read(
-            state.breakpoints, cached_tokens, state.system_tokens,
-            prospective_prefix, config.walkback_window_tokens,
+            state.breakpoints, cached_tokens, state.cached_blocks, state.system_tokens,
+            prospective_blocks, config.walkback_window_blocks,
         )
         write_tokens = prospective_prefix - read_tokens  # the un-read tail is rewritten
         full_input_tokens = 0  # CC's advancing breakpoint writes new content (no raw tail)
         if read_tokens < cached_tokens:
             notes.append(
-                f"walk-back: new content sits {prospective_prefix - cached_tokens} tok "
-                f"past the trailing breakpoint (> window {config.walkback_window_tokens}); "
+                f"walk-back: turn adds {prospective_blocks - state.cached_blocks} blocks "
+                f"since the trailing breakpoint (> window {config.walkback_window_blocks}); "
                 f"read falls back to {read_tokens} tok"
             )
         new_cached_tokens = prospective_prefix
+        new_cached_blocks = prospective_blocks
         new_breakpoints = _maintain_breakpoints(
             state.system_tokens, new_cached_tokens, config.max_breakpoints
         )
@@ -310,11 +326,14 @@ def _apply_turn(
     # 5. Advance the sequence. cached_tokens / breakpoints were chosen above (step 2);
     #    the output just produced is not yet cached (it gets written on the next turn).
     new_prefix_tokens = state.prefix_tokens + event.input_tokens + event.output_tokens
+    new_prefix_blocks = state.prefix_blocks + event.input_blocks + event.output_blocks
     new_state = replace(
         state,
         prefix_tokens=new_prefix_tokens,
         cached_tokens=new_cached_tokens,
         breakpoints=new_breakpoints,
+        prefix_blocks=new_prefix_blocks,
+        cached_blocks=new_cached_blocks,
         last_used=state.now,
     )
     return new_state, breakdown
@@ -323,36 +342,40 @@ def _apply_turn(
 def _walk_back_read(
     breakpoints: tuple[int, ...],
     cached_tokens: int,
+    cached_blocks: int,
     system_tokens: int,
-    prospective_prefix: int,
-    window: int,
+    prospective_blocks: int,
+    window_blocks: int,
 ) -> int:
-    """The cache hit length for a turn, modeling the 20-block lookback as a token
-    distance (design section 6, option 1).
+    """The cache hit length (in tokens) for a turn, gating the 20-block lookback on
+    block distance (the unit Anthropic actually walks back over).
 
     The new request re-places its breakpoints; the hit length is the highest live
-    breakpoint the request can still reach. A live breakpoint at offset b
-    (0 < b <= cached_tokens) is reachable when either:
+    breakpoint (a token offset) the request can still reach. A live breakpoint at offset
+    b (0 < b <= cached_tokens) is reachable when either:
 
       - it is the anchored breakpoint at the protected-prefix boundary
         (b == system_tokens) -- a kept cache_control entry over system + tools that is
         hit directly while that prefix is unchanged and warm, independent of the window; or
-      - the new content since it is within the lookback window
-        (prospective_prefix - b <= window) -- the auto-advancing trailing breakpoint can
-        still be walked back to.
+      - the new content since the trailing breakpoint is within the lookback window
+        (prospective_blocks - cached_blocks <= window_blocks) -- the auto-advancing
+        trailing breakpoint can still be walked back to.
 
-    So an ordinary turn reaches the trailing breakpoint and reads the whole cached prefix
-    (Stage 1 behavior). A large single-turn jump pushes the trailing breakpoint out of the
+    With max_breakpoints == 2 the only non-anchored breakpoint is the trailing one at
+    cached_tokens/cached_blocks, so a single within_window flag covers it. An ordinary
+    turn adds a block or two and reaches the trailing breakpoint, reading the whole cached
+    prefix. A turn that fans out past 20 blocks pushes the trailing breakpoint out of the
     window; the read then falls back to the anchored protected prefix (a partial hit) or,
     with no anchored breakpoint, to 0 (full miss). A cold cache (cached_tokens == 0) is
     always a full miss."""
     if cached_tokens <= 0:
         return 0
+    within_window = prospective_blocks - cached_blocks <= window_blocks
     reachable = [
         b
         for b in set(breakpoints) | {cached_tokens}
         if 0 < b <= cached_tokens
-        and (b == system_tokens or prospective_prefix - b <= window)
+        and (b == system_tokens or within_window)
     ]
     return max(reachable, default=0)
 

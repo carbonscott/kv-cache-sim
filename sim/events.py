@@ -14,10 +14,17 @@ from typing import Union
 class Turn:
     """One request/response. input_tokens is everything appended to context this
     turn (a user prompt and/or a fake tool-result size); output_tokens is
-    the assistant's generation."""
+    the assistant's generation.
+
+    input_blocks / output_blocks count the content blocks this turn carries, parallel
+    to the token fields (a user message is 1 block, a tool round-trip is 2). They
+    default to 0 so a turn that does not track blocks keeps its token-only behavior;
+    the engine gates the 20-block walk-back on input_blocks."""
 
     input_tokens: int
     output_tokens: int
+    input_blocks: int = 0
+    output_blocks: int = 0
 
 
 @dataclass(frozen=True)

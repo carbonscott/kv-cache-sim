@@ -89,6 +89,8 @@ class Session:
         self.turn_index = 0
         self.pending_input = 0
         self.pending_output = 0
+        self.pending_input_blocks = 0
+        self.pending_output_blocks = 0
         self.done = False
 
     # -- pending-turn helpers ------------------------------------------------
@@ -99,9 +101,16 @@ class Session:
     def _commit_turn(self) -> list[str]:
         if not self._has_pending():
             return ["(nothing to send: the pending turn is empty)"]
-        event = Turn(input_tokens=self.pending_input, output_tokens=self.pending_output)
+        event = Turn(
+            input_tokens=self.pending_input,
+            output_tokens=self.pending_output,
+            input_blocks=self.pending_input_blocks,
+            output_blocks=self.pending_output_blocks,
+        )
         self.pending_input = 0
         self.pending_output = 0
+        self.pending_input_blocks = 0
+        self.pending_output_blocks = 0
         return self._apply(event)
 
     def _apply(self, event) -> list[str]:
@@ -171,6 +180,7 @@ class Session:
             return ["usage: user <n | text...>"]
         added = _tokens_or_text(" ".join(args), self.encoding)
         self.pending_input += added
+        self.pending_input_blocks += 1  # a user message materializes one content block
         return [f"+{added} input tok (pending turn: in={self.pending_input}, "
                 f"out={self.pending_output})"]
 
@@ -180,6 +190,7 @@ class Session:
         name = " ".join(args[:-1])
         added = int(args[-1])
         self.pending_input += added
+        self.pending_input_blocks += 2  # a tool round-trip = tool_use + tool_result blocks
         return [f"+{added} tool-result tok from {name!r} "
                 f"(pending turn: in={self.pending_input}, out={self.pending_output})"]
 
@@ -188,6 +199,7 @@ class Session:
             return ["usage: assistant <n | text...>"]
         added = _tokens_or_text(" ".join(args), self.encoding)
         self.pending_output += added
+        self.pending_output_blocks += 1  # an assistant generation is one content block
         return [f"+{added} output tok (pending turn: in={self.pending_input}, "
                 f"out={self.pending_output})"]
 
