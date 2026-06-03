@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
 
-from cli.session import Session, parse_duration
+from cli.session import Session, default_state, parse_duration
 from sim.config import load_config
 from sim.state import CacheState
 
@@ -273,6 +273,141 @@ def test_clear_tools_bad_arg_is_rejected(config):
     assert any("usage: clear-tools" in line for line in out)
     assert s.state == before
     assert s.turn_index == 0
+
+
+# -- reset: wipe everything back to a fresh cold session ---------------------
+
+def test_reset_restores_defaults(config):
+    # Warm session on a non-default model, with cost and turns accumulated.
+    s = warm_session(config, prefix=50_000)
+    s.handle("user 1000")
+    s.handle("send")
+    s.handle("user 500")
+    s.handle("send")
+    assert s.running_total > 0 and s.turn_index == 2
+
+    out = s.handle("reset")
+    assert any("session reset" in line for line in out)
+    first_model = next(iter(config.models))
+    assert s.state.model == first_model
+    assert s.state.effort == "high"
+    assert s.state.ttl_seconds == config.ttl_seconds["5m"]
+    assert s.state.cached_tokens == 0
+    assert s.state.prefix_tokens == 0
+    assert s.running_total == 0.0
+    assert s.turn_index == 0
+
+
+def test_reset_clears_pending_turn(config):
+    s = warm_session(config)
+    s.handle("user 1000")
+    s.handle("assistant 200")
+    assert s.pending_input == 1000 and s.pending_output == 200
+
+    s.handle("reset")
+    assert s.pending_input == 0 and s.pending_output == 0
+    assert s.pending_input_blocks == 0 and s.pending_output_blocks == 0
+
+
+def test_reset_sets_banner_flag(config):
+    s = warm_session(config)
+    assert s.just_reset is False
+    s.handle("reset")
+    assert s.just_reset is True
+
+
+def test_reset_keeps_session_running(config):
+    s = warm_session(config)
+    s.handle("reset")
+    assert s.done is False
+
+
+# -- save/load: command-log recording and replay -----------------------------
+
+def test_history_records_state_commands(config):
+    s = warm_session(config)
+    s.handle("user 1000")
+    s.handle("tool read_file 500")
+    s.handle("assistant 200")
+    s.handle("send")
+    s.handle("model opus-4.8")
+    s.handle("status")  # read-only: not recorded
+    s.handle("help")    # read-only: not recorded
+    assert s.history == [
+        "user 1000",
+        "tool read_file 500",
+        "assistant 200",
+        "send",
+        "model opus-4.8",
+    ]
+    assert "status" not in s.history
+    assert "help" not in s.history
+
+
+def test_blank_line_records_send_only_when_committing(config):
+    s = warm_session(config)
+    s.handle("")  # nothing pending: records nothing
+    assert s.history == []
+
+    s.handle("user 1000")
+    s.handle("")  # pending turn commits: records "send"
+    assert s.history == ["user 1000", "send"]
+
+
+def cold_session(config):
+    """A fresh cold session, like the REPL starts with -- so replay from a saved
+    history (which also starts cold) reconstructs the same state."""
+    return Session(default_state(config), config)
+
+
+def test_load_commands_round_trips_state(config):
+    # Drive an original cold session through several turns + a model switch.
+    original = cold_session(config)
+    original.handle("user 1000")
+    original.handle("tool read_file 800")
+    original.handle("send")
+    original.handle("model opus-4.8")
+    original.handle("user 500")
+    original.handle("assistant 300")
+    original.handle("send")
+    history = list(original.history)
+
+    # Replay the captured history into a fresh session.
+    replayed = cold_session(config)
+    replayed.load_commands(history)
+
+    assert replayed.state.model == original.state.model
+    assert replayed.state.effort == original.state.effort
+    assert replayed.state.prefix_tokens == original.state.prefix_tokens
+    assert replayed.state.cached_tokens == original.state.cached_tokens
+    assert replayed.running_total == original.running_total
+    assert replayed.turn_index == original.turn_index
+    # A subsequent save round-trips: history matches the recordable lines replayed.
+    assert replayed.history == history
+
+
+def test_reset_keeps_history_and_records(config):
+    s = warm_session(config, prefix=50_000)
+    s.handle("user 1000")
+    s.handle("send")
+    s.handle("reset")
+    # History keeps the pre-reset commands plus "reset", so replay reproduces it.
+    assert s.history == ["user 1000", "send", "reset"]
+
+
+def test_malformed_recordable_line_is_replay_safe(config):
+    # A bad model name is a no-op when typed, but still recorded.
+    original = cold_session(config)
+    original.handle("user 1000")
+    original.handle("send")
+    original.handle("model gpt-9")  # rejected no-op
+    assert "model gpt-9" in original.history
+
+    replayed = cold_session(config)
+    replayed.load_commands(original.history)
+    assert replayed.state.model == original.state.model
+    assert replayed.state.cached_tokens == original.state.cached_tokens
+    assert replayed.turn_index == original.turn_index
 
 
 # -- status reflects effective (TTL-aware) cache -----------------------------

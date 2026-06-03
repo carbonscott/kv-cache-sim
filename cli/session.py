@@ -45,16 +45,30 @@ HELP = """commands:
   effort <level>          switch effort level (invalidates the cache)
   upgrade                 simulate a CC upgrade (invalidates the cache, even in TTL)
   status                  show current session state and the pending turn
+  reset                   wipe everything back to a fresh cold session
+  save <file>             write this session's commands to a replayable file
+  load <file>             replace this session by replaying a saved file
   help                    show this help
   quit | exit             leave the session"""
 
 # The canonical list of top-level command verbs, used by the REPL's Tab
 # completer. Kept in sync with the if/elif chain in Session.handle().
+# `save`/`load` are handled by the REPL front-end (file I/O lives there); the
+# batch runner doesn't support them.
 COMMAND_NAMES = (
     "user", "tool", "assistant", "send", "advance", "ttl", "rewind", "compact",
-    "clear-tools", "model", "effort", "upgrade", "status", "help",
-    "quit", "exit",
+    "clear-tools", "model", "effort", "upgrade", "status", "reset", "save",
+    "load", "help", "quit", "exit",
 )
+
+# State-changing verbs that get recorded into Session.history for save/replay.
+# `send` is recorded specially (only when a pending turn actually commits), so
+# it's not listed here. Unknown verbs and read-only verbs (status/help) are not
+# recorded.
+RECORDABLE = frozenset({
+    "user", "tool", "assistant", "advance", "ttl", "rewind",
+    "compact", "clear-tools", "model", "effort", "upgrade", "reset",
+})
 
 _DURATION = re.compile(r"^(\d+)\s*([smh]?)$")
 _UNIT_SECONDS = {"": 1, "s": 1, "m": 60, "h": 3600}
@@ -78,6 +92,20 @@ def _tokens_or_text(arg: str, encoding: str) -> int:
     return count_tokens(arg, encoding)
 
 
+def default_state(config: Config) -> CacheState:
+    """A fresh, cold session on the first model in the config at 5-minute TTL."""
+    first_model = next(iter(config.models))
+    return CacheState(
+        model=first_model,
+        effort="high",
+        ttl_seconds=config.ttl_seconds["5m"],
+        last_used=0.0,
+        now=0.0,
+        prefix_tokens=0,
+        cached_tokens=0,
+    )
+
+
 class Session:
     """Holds engine state, the running cost, and the pending (uncommitted) turn."""
 
@@ -92,6 +120,8 @@ class Session:
         self.pending_input_blocks = 0
         self.pending_output_blocks = 0
         self.done = False
+        self.just_reset = False  # set by `reset`; the REPL checks it to reprint its banner
+        self.history: list[str] = []  # state-changing commands, for save/load replay
 
     # -- pending-turn helpers ------------------------------------------------
 
@@ -135,12 +165,19 @@ class Session:
         """Process one command line, returning output lines to print."""
         stripped = line.strip()
         if stripped == "":
-            return self._commit_turn()  # blank line commits the pending turn
+            # A blank line commits the pending turn; record it as `send` only if
+            # something actually commits, so stray blank lines don't litter history.
+            if self._has_pending():
+                self.history.append("send")
+            return self._commit_turn()
         if stripped.startswith("#"):
             return []  # comment line: ignored by both front-ends
 
         parts = stripped.split()
         command, args = parts[0].lower(), parts[1:]
+
+        if command in RECORDABLE:
+            self.history.append(stripped)
 
         if command in ("quit", "exit"):
             self.done = True
@@ -149,7 +186,12 @@ class Session:
             return [HELP]
         if command == "status":
             return self._status()
+        if command == "reset":
+            return self._reset()
         if command == "send":
+            # Same as a blank line: only record when a turn actually commits.
+            if self._has_pending():
+                self.history.append("send")
             return self._commit_turn()
         if command == "user":
             return self._user(args)
@@ -252,6 +294,42 @@ class Session:
         if not args:
             return ["usage: effort <level>"]
         return self._apply(SwitchEffort(effort=args[0]))
+
+    def _reset_session(self, clear_history: bool) -> None:
+        """Wipe engine state, cost, and the pending turn back to a fresh cold session.
+        Shared by `reset` (keeps history, so replay reproduces the reset) and `load`
+        (clears history before replaying a saved file). Keeps config/encoding."""
+        self.state = default_state(self.config)
+        self.running_total = 0.0
+        self.turn_index = 0
+        self.pending_input = 0
+        self.pending_output = 0
+        self.pending_input_blocks = 0
+        self.pending_output_blocks = 0
+        if clear_history:
+            self.history = []
+
+    def _reset(self) -> list[str]:
+        """Wipe the run back to a fresh cold session, as if the app were relaunched.
+        Keeps config/encoding (and stays running); the REPL reprints its banner via
+        the just_reset flag. History is kept -- `handle()` records the `reset` command
+        like any other, so a later replay reproduces the reset."""
+        self._reset_session(clear_history=False)
+        self.just_reset = True
+        return ["session reset to a fresh cold session."]
+
+    def load_commands(self, lines: list[str]) -> list[str]:
+        """Replace this session by replaying a saved command file. Resets to a fresh
+        cold session (clearing history), then feeds each line through handle() -- the
+        same pure engine path as batch mode -- so cost, turn index, and the pending
+        turn are all re-derived deterministically. Because handle() re-records the
+        replayed commands, self.history ends equal to the file's recordable lines, so
+        a subsequent save round-trips. Returns the accumulated replay output."""
+        self._reset_session(clear_history=True)
+        output: list[str] = []
+        for line in lines:
+            output.extend(self.handle(line))
+        return output
 
     def _status(self) -> list[str]:
         lines = [ledger.status_line(self.state, self.running_total)]
