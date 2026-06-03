@@ -13,7 +13,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from cli.repl import command_completions
+from cli.repl import command_completions, read_history, write_history
 from cli.session import COMMAND_NAMES
 
 
@@ -37,3 +37,17 @@ def test_no_completion_past_the_command_word():
 
 def test_no_match():
     assert command_completions("xyz", "xyz") == []
+
+
+# -- save/load file I/O helpers ----------------------------------------------
+# The interactive input() confirmation in the load intercept needs a live
+# terminal and is verified manually; the pure file helpers are checked here.
+
+def test_write_then_read_history_round_trips(tmp_path):
+    history = ["user 1000", "send", "model opus-4.8", "reset"]
+    path = str(tmp_path / "sess.txt")
+    write_history(path, history)
+    # The leading comment line is ignored by handle() on replay; read_history
+    # returns it verbatim, so strip comments to compare the commands.
+    lines = [line for line in read_history(path) if not line.startswith("#")]
+    assert lines == history
