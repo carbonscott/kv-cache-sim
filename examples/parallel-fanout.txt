@@ -1,0 +1,60 @@
+# parallel-fanout.txt -- the 20-block walk-back cliff, driven by a parallel fan-out.
+#
+# Demonstrates the call-as-atom loop + `tu=N` + the block-distance cliff. A warm
+# session issues ONE generation that emits 11 parallel tool_use blocks (call ...
+# tu=11); the 11 tool results come back and a final call answers. The cache's
+# 20-block lookback walks back over CONTENT BLOCKS, not tokens, so this busts it:
+#
+#     block distance for the final call (since the fan-out call's breakpoint)
+#       = 11 tool_use blocks emitted  +  11 tool_result blocks returned
+#       = 22  >  20-block window
+#
+# so the lookback misses and the whole prefix is rewritten -- even though the new
+# tokens are modest. The miss is block-driven, not token-driven.
+#
+# NOTE: run from a cold batch session there is no protected prefix
+# (system_tokens == 0), so the busted lookback falls all the way back to 0 -- a
+# FULL miss (read 0). In a real session with a cached system+tools prefix, the
+# anchored breakpoint at that boundary would still re-hit, making it a PARTIAL
+# miss instead. Either way the trailing breakpoint is out of reach past 22 blocks.
+#
+# `user`/`tool` are free local appends; `call <out> [tu=N]` is the one billed
+# request. Default model opus-4.8 (min_cacheable 1024), 5m TTL.
+
+# --- Call 1: seed a small warm prefix (2000 tok >= min_cacheable, so it caches).
+user 2000
+call 500
+
+# --- Call 2: a warm follow-up; the cached prefix is read at 0.1x. Distance is 2
+# blocks, well within the window.
+user 1000
+call 300
+
+# --- Call 3: the fan-out generation. One assistant turn decides to call 11 tools
+# in parallel, emitting 11 tool_use blocks (tu=11). Still a warm READ here -- the
+# blow-up lands on the NEXT call, once the results are appended.
+user 800
+call 400 tu=11
+
+# --- The 11 parallel tool results come back (each a free +1 input block). After
+# these, the pending input is 11 blocks; together with the 11 tool_use blocks the
+# fan-out emitted, the final call sits 22 blocks past the trailing breakpoint.
+tool search_a 200
+tool search_b 200
+tool search_c 200
+tool search_d 200
+tool search_e 200
+tool search_f 200
+tool search_g 200
+tool search_h 200
+tool search_i 200
+tool search_j 200
+tool search_k 200
+
+# --- Final call: answer after seeing all 11 results. Expect a "walk-back" note
+# (22 > 20) and hit% = 0 -- the cache is busted and the whole ~7200-tok prefix is
+# rewritten at the write rate.
+call 900
+
+status
+quit

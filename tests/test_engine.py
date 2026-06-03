@@ -17,12 +17,12 @@ from sim.config import dollars, load_config
 from sim.engine import apply_event
 from sim.events import (
     Advance,
+    Call,
     ClearToolResults,
     Compact,
     Rewind,
     SwitchEffort,
     SwitchModel,
-    Turn,
     Upgrade,
 )
 from sim.state import CacheState
@@ -75,7 +75,7 @@ def test_validation_target_cached_turn_is_about_7x_cheaper(config):
     """research/05 section 2: 50K cached + 2K new on sonnet is ~7x cheaper than
     paying full base for all 51K input."""
     state = warm_state(config, model="sonnet-4.6", prefix=50_000)
-    _, cost = apply_event(state, Turn(input_tokens=2_000, output_tokens=0), config)
+    _, cost = apply_event(state, Call(input_tokens=2_000, output_tokens=0), config)
 
     # Cached: 50K read at 0.1x ($0.30/MTok) + 2K write at 1.25x ($3.75/MTok).
     expected = dollars(50_000, 0.30) + dollars(2_000, 3.75)
@@ -90,7 +90,7 @@ def test_validation_target_cached_turn_is_about_7x_cheaper(config):
 def test_turn_splits_read_and_write(config):
     """A warm turn reads the whole cached prefix and writes only the new input."""
     state = warm_state(config, prefix=50_000)
-    _, cost = apply_event(state, Turn(input_tokens=2_000, output_tokens=500), config)
+    _, cost = apply_event(state, Call(input_tokens=2_000, output_tokens=500), config)
 
     assert cost.read_tokens == 50_000
     assert cost.write_tokens == 2_000
@@ -102,8 +102,8 @@ def test_turn_splits_read_and_write(config):
 def test_output_is_cached_only_on_the_next_turn(config):
     """Turn 2's write must include turn 1's generated output."""
     state = warm_state(config, prefix=50_000)
-    state, cost1 = apply_event(state, Turn(input_tokens=2_000, output_tokens=500), config)
-    state, cost2 = apply_event(state, Turn(input_tokens=1_000, output_tokens=300), config)
+    state, cost1 = apply_event(state, Call(input_tokens=2_000, output_tokens=500), config)
+    state, cost2 = apply_event(state, Call(input_tokens=1_000, output_tokens=300), config)
 
     # Turn 1 wrote 2K (its input); turn 1's 500 output was NOT yet written.
     assert cost1.write_tokens == 2_000
@@ -119,7 +119,7 @@ def test_ttl_expiry_forces_full_rebuild(config):
     """Idling past the TTL drops every cache hit on the next turn."""
     state = warm_state(config, prefix=50_000, ttl_key="5m")  # 300s TTL
     state, _ = apply_event(state, Advance(seconds=600), config)  # 10 min idle
-    _, cost = apply_event(state, Turn(input_tokens=1_000, output_tokens=400), config)
+    _, cost = apply_event(state, Call(input_tokens=1_000, output_tokens=400), config)
 
     assert cost.read_tokens == 0
     assert cost.write_tokens == 50_000 + 1_000  # whole history + new input rewritten
@@ -130,7 +130,7 @@ def test_active_session_stays_warm_within_ttl(config):
     """A gap shorter than the TTL keeps the cache; each turn refreshes last_used."""
     state = warm_state(config, prefix=50_000, ttl_key="5m")
     state, _ = apply_event(state, Advance(seconds=200), config)
-    state, cost = apply_event(state, Turn(input_tokens=1_000, output_tokens=0), config)
+    state, cost = apply_event(state, Call(input_tokens=1_000, output_tokens=0), config)
     assert cost.read_tokens == 50_000  # still warm
 
 
@@ -143,7 +143,7 @@ def test_switch_model_invalidates_at_zero_cost(config):
     assert state.model == "opus-4.8"
     assert state.cached_tokens == 0
 
-    _, cost = apply_event(state, Turn(input_tokens=1_000, output_tokens=0), config)
+    _, cost = apply_event(state, Call(input_tokens=1_000, output_tokens=0), config)
     assert cost.read_tokens == 0
     assert cost.write_tokens == 50_000 + 1_000
     # Billed at opus base ($5/MTok), confirming the model switch took effect.
@@ -170,7 +170,7 @@ def test_switch_effort_invalidates_but_noop_does_not(config):
 def test_one_hour_ttl_uses_2x_write_multiplier(config):
     """The write multiplier follows the active TTL."""
     state = warm_state(config, model="sonnet-4.6", prefix=0, ttl_key="1h")
-    _, cost = apply_event(state, Turn(input_tokens=4_000, output_tokens=0), config)
+    _, cost = apply_event(state, Call(input_tokens=4_000, output_tokens=0), config)
     assert cost.write_cost == pytest.approx(dollars(4_000, 3.0 * 2.0))
 
 
@@ -193,7 +193,7 @@ def test_sub_minimum_first_turn_is_not_cached(config):
     """A tiny first turn whose prefix is below min_cacheable establishes no entry:
     read==write==0, the whole input billed at 1.0x base, and no breakpoint."""
     state = cold_state(config, model="sonnet-4.6")  # min_cacheable 1024
-    new_state, cost = apply_event(state, Turn(input_tokens=500, output_tokens=100), config)
+    new_state, cost = apply_event(state, Call(input_tokens=500, output_tokens=100), config)
 
     assert cost.read_tokens == 0
     assert cost.write_tokens == 0
@@ -212,7 +212,7 @@ def test_sub_minimum_first_turn_is_not_cached(config):
 def test_above_minimum_turn_caches_normally(config):
     """Just over the minimum, the turn caches as in Stage 1 (sanity boundary check)."""
     state = cold_state(config, model="sonnet-4.6")
-    _, cost = apply_event(state, Turn(input_tokens=2_000, output_tokens=0), config)
+    _, cost = apply_event(state, Call(input_tokens=2_000, output_tokens=0), config)
     assert cost.full_input_tokens == 0
     assert cost.write_tokens == 2_000  # cold rebuild writes the whole prefix
 
@@ -234,7 +234,7 @@ def test_turn_after_upgrade_is_a_full_write(config):
     """The post-upgrade turn pays a full write with no hits, despite being in TTL."""
     state = warm_state(config, prefix=50_000)
     state, _ = apply_event(state, Upgrade(), config)
-    _, cost = apply_event(state, Turn(input_tokens=1_000, output_tokens=400), config)
+    _, cost = apply_event(state, Call(input_tokens=1_000, output_tokens=400), config)
 
     assert cost.read_tokens == 0
     assert cost.write_tokens == 50_000 + 1_000  # whole history + new input rewritten
@@ -246,7 +246,7 @@ def test_turn_after_upgrade_is_a_full_write(config):
 def test_warm_turn_keeps_trailing_breakpoint_consistent(config):
     """A warm turn's trailing breakpoint equals cached_tokens (cost math unchanged)."""
     state = warm_state(config, prefix=50_000)  # system_tokens defaults to 0
-    new_state, _ = apply_event(state, Turn(input_tokens=2_000, output_tokens=500), config)
+    new_state, _ = apply_event(state, Call(input_tokens=2_000, output_tokens=500), config)
     assert new_state.breakpoints == (new_state.cached_tokens,)
     assert new_state.cached_tokens == 52_000
 
@@ -264,7 +264,7 @@ def test_breakpoints_stay_sorted_and_capped(config):
         cached_tokens=50_000,
         system_tokens=8_000,
     )
-    new_state, _ = apply_event(state, Turn(input_tokens=2_000, output_tokens=0), config)
+    new_state, _ = apply_event(state, Call(input_tokens=2_000, output_tokens=0), config)
     assert new_state.breakpoints == (8_000, 52_000)
     assert list(new_state.breakpoints) == sorted(new_state.breakpoints)
     assert len(new_state.breakpoints) <= config.max_breakpoints
@@ -276,8 +276,8 @@ def test_rewind_re_hits_earlier_prefix(config):
     """Rewinding to an offset inside the cached prefix re-hits: the truncated point
     stays cached, so the next turn reads it cheaply (unlike a model switch)."""
     state = warm_state(config, prefix=50_000)
-    state, _ = apply_event(state, Turn(input_tokens=2_000, output_tokens=500), config)
-    state, _ = apply_event(state, Turn(input_tokens=1_000, output_tokens=300), config)
+    state, _ = apply_event(state, Call(input_tokens=2_000, output_tokens=500), config)
+    state, _ = apply_event(state, Call(input_tokens=1_000, output_tokens=300), config)
     assert state.cached_tokens > 30_000  # warm and well past the rewind target
 
     rewound, cost = apply_event(state, Rewind(to_tokens=30_000), config)
@@ -288,7 +288,7 @@ def test_rewind_re_hits_earlier_prefix(config):
     assert any("re-hit" in n for n in cost.notes)
 
     # The follow-up turn reads the rewound prefix rather than rewriting it.
-    _, turn_cost = apply_event(rewound, Turn(input_tokens=1_000, output_tokens=0), config)
+    _, turn_cost = apply_event(rewound, Call(input_tokens=1_000, output_tokens=0), config)
     assert turn_cost.read_tokens == 30_000
 
 
@@ -353,7 +353,7 @@ def test_compact_reads_warm_prefix_then_re_anchors(config):
     assert compacted.breakpoints[-1] == 8_000
 
     # The follow-up turn re-hits the protected prefix, not the old 50K conversation.
-    _, turn_cost = apply_event(compacted, Turn(input_tokens=1_000, output_tokens=0), config)
+    _, turn_cost = apply_event(compacted, Call(input_tokens=1_000, output_tokens=0), config)
     assert turn_cost.read_tokens == 8_000
 
 
@@ -395,7 +395,7 @@ def test_clear_tool_results_invalidates_downstream(config):
     assert any("cleared" in n for n in cost.notes)
 
     # The follow-up turn reads the protected prefix and rewrites the shifted suffix.
-    _, turn_cost = apply_event(cleared, Turn(input_tokens=1_000, output_tokens=0), config)
+    _, turn_cost = apply_event(cleared, Call(input_tokens=1_000, output_tokens=0), config)
     assert turn_cost.read_tokens == 8_000
     assert turn_cost.write_tokens == (40_000 - 8_000) + 1_000
 
@@ -426,7 +426,7 @@ def test_walk_back_normal_turn_still_hits(config):
     assert config.walkback_window_blocks == 20
     state = warm_state(config, prefix=50_000)
     _, cost = apply_event(
-        state, Turn(input_tokens=2_000, output_tokens=0, input_blocks=2), config
+        state, Call(input_tokens=2_000, output_tokens=0, input_blocks=2), config
     )
     assert cost.read_tokens == 50_000
 
@@ -436,7 +436,7 @@ def test_walk_back_input_exactly_at_window_still_hits(config):
     state = warm_state(config, prefix=50_000)
     _, cost = apply_event(
         state,
-        Turn(input_tokens=2_000, output_tokens=0,
+        Call(input_tokens=2_000, output_tokens=0,
              input_blocks=config.walkback_window_blocks),
         config,
     )
@@ -450,7 +450,7 @@ def test_walk_back_huge_single_turn_jump_is_a_full_miss(config):
     state = warm_state(config, prefix=50_000)  # trailing breakpoint at 50K, block 0
     # 24 blocks > 20-block window, but only 12k tokens (mirrors the fanout-n12 cliff).
     new_state, cost = apply_event(
-        state, Turn(input_tokens=12_000, output_tokens=0, input_blocks=24), config
+        state, Call(input_tokens=12_000, output_tokens=0, input_blocks=24), config
     )
 
     assert cost.read_tokens == 0
@@ -469,13 +469,13 @@ def test_walk_back_huge_jump_falls_back_to_anchored_breakpoint(config):
     state = layered_warm_state(config, system=8_000, prefix=50_000)
     # One normal turn establishes the anchored + trailing breakpoints.
     state, _ = apply_event(
-        state, Turn(input_tokens=1_000, output_tokens=0, input_blocks=1), config
+        state, Call(input_tokens=1_000, output_tokens=0, input_blocks=1), config
     )
     assert state.breakpoints == (8_000, 51_000)
 
     # 24 blocks since the trailing breakpoint > 20-block window.
     _, cost = apply_event(
-        state, Turn(input_tokens=12_000, output_tokens=0, input_blocks=24), config
+        state, Call(input_tokens=12_000, output_tokens=0, input_blocks=24), config
     )
     assert cost.read_tokens == 8_000              # anchored protected prefix still hits
     assert cost.write_tokens == (51_000 - 8_000) + 12_000

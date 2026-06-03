@@ -1,10 +1,10 @@
 """Stage 2 tests: the batch runner's core -- feeding a command file (the REPL
-grammar, plus `#` comments and blank-line commits) through one Session.
+grammar, plus `#` comments and no-op blank lines) through one Session.
 
 The batch runner does no work the Session doesn't already do; it just reads a
 file and prints. So we drive a small in-test command list through a Session and
 assert the same behaviour the runner relies on, then run the shipped example
-file end to end.
+files end to end.
 
 Run from the project root:  python -m pytest tests/test_batch.py -v
 """
@@ -30,6 +30,11 @@ EXAMPLE_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "examples",
     "warm-then-cold.txt",
+)
+FANOUT_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "examples",
+    "parallel-fanout.txt",
 )
 
 
@@ -70,49 +75,62 @@ def test_comment_line_is_ignored(config):
     assert s.pending_input == 0       # and touched nothing
 
 
-def test_comment_does_not_commit_pending_turn(config):
+def test_comment_does_not_bill_pending_input(config):
     s = warm_session(config)
     s.handle("user 1000")
-    s.handle("# spacer comment, should NOT commit")
-    assert s.turn_index == 0          # still pending
+    s.handle("# spacer comment, should NOT bill")
+    s.handle("")                      # blank line is also a no-op now
+    assert s.turn_index == 0          # nothing billed yet
     assert s.pending_input == 1000
 
-    s.handle("")                      # blank line commits
+    s.handle("call 200")              # the call bills the accumulated input
     assert s.turn_index == 1
     assert s.pending_input == 0
 
 
 # -- warm vs cold through the runner -----------------------------------------
 
-def test_warm_turn_reads_cached_prefix(config):
+def test_warm_call_reads_cached_prefix(config):
     s = warm_session(config, prefix=50_000)
-    out = run_lines(s, ["user 1000", "assistant 400", ""])
+    out = run_lines(s, ["user 1000", "call 400"])
     assert s.turn_index == 1
     # The cached 50K prefix is read, not rewritten.
     assert s.state.cached_tokens >= 50_000
-    assert any("Turn(in=1000" in line for line in out)  # a ledger row was emitted
+    assert any("Call(in=1000" in line for line in out)  # a ledger row was emitted
 
 
-def test_post_advance_turn_is_cold_resume(config):
+def test_post_advance_call_is_cold_resume(config):
     s = warm_session(config, prefix=50_000)
-    out = run_lines(s, ["advance 10m", "user 1200", "assistant 500", ""])
+    out = run_lines(s, ["advance 10m", "user 1200", "call 500"])
     assert any("cold resume" in line for line in out)
 
 
 def test_quit_in_file_sets_done(config):
     s = warm_session(config)
-    out = run_lines(s, ["user 100", "", "quit", "user 999"])
+    out = run_lines(s, ["user 100", "call 50", "quit", "user 999"])
     assert s.done is True
     assert any("bye" in line for line in out)
     # The line after quit never ran (run loop broke on session.done).
     assert s.pending_input == 0
 
 
-# -- the shipped example file runs end to end --------------------------------
+# -- the shipped example files run end to end --------------------------------
 
 def test_example_file_runs_to_a_positive_total(config):
     session = Session(default_state(config), config)
     with open(EXAMPLE_PATH) as f:
         run_lines(session, [line.rstrip("\n") for line in f])
     assert session.done is True              # the file ends in `quit`
-    assert session.running_total > 0.0       # turns cost something
+    assert session.running_total > 0.0       # calls cost something
+
+
+def test_fanout_example_busts_the_block_window(config):
+    """The parallel-fanout example issues one `call ... tu=10` then 10 tool results,
+    pushing the block distance past the 20-block window so the final call falls back
+    to the anchored protected prefix -- a partial hit with a walk-back note."""
+    session = Session(default_state(config), config)
+    with open(FANOUT_PATH) as f:
+        out = run_lines(session, [line.rstrip("\n") for line in f])
+    assert session.done is True
+    assert session.running_total > 0.0
+    assert any("walk-back" in line for line in out)  # the window-bust note appears

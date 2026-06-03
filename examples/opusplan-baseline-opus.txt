@@ -1,0 +1,45 @@
+# opusplan-baseline-opus.txt -- the "do it all on Opus" baseline.
+#
+# One Opus planning turn that reads ~30K of files and writes a plan, then four
+# small implementation turns -- all on opus-4.8, one warm cache the whole way.
+# This single file is the baseline for BOTH Experiment 1 and Experiment 2; run
+# it once and compare each opusplan arm against its total.
+#
+# Default model is opus-4.8, default TTL 5m. `user`/`tool` are free local appends;
+# `call <out> [tu=N]` is the one billed API request. Each tool turn is TWO calls:
+# the tool-requesting generation (~50 nominal tok + tool_use) and the answer after
+# the tool result. Blank lines are no-ops.
+
+# --- Turn 1: plan. The model asks to Read files (a ~50-tok tool_use call), the
+# 30K of file content comes back, and it emits a 3K plan. The 30K Read is one full
+# write to seed the prefix; most of the session's input tokens are born here.
+user 2000
+call 50 tu=1
+tool Read 30000
+call 3000
+
+# --- Turns 2-5: implement on the warm prefix. Each turn is a small tool_use call
+# plus an answer; both mostly READ the cached ~35K context at 0.1x and write only
+# the small new tail. Cheap.
+user 500
+call 50 tu=1
+tool Read 100
+call 1500
+
+user 500
+call 50 tu=1
+tool Read 100
+call 1500
+
+user 500
+call 50 tu=1
+tool Read 100
+call 1500
+
+user 500
+call 50 tu=1
+tool Read 100
+call 1500
+
+status
+quit

@@ -62,19 +62,19 @@ Stage 1 is driven by a **scripted list of events**. Proposed as small tagged dat
 
 | Event | Fields | Effect |
 |---|---|---|
-| `Turn` | `input_tokens: int`, `output_tokens: int` | one request/response: reads cached prefix, writes new blocks, generates output, grows the sequence |
-| `Advance` | `seconds: int` | jump the simulated clock; no cost. TTL expiry is detected lazily on the next `Turn` |
-| `SwitchModel` | `model: str` | set model; invalidate cache (`cached_tokens → 0`). Zero immediate cost; the next `Turn` pays the full rebuild |
+| `Call` | `input_tokens: int`, `output_tokens: int` | one request/response: reads cached prefix, writes new blocks, generates output, grows the sequence |
+| `Advance` | `seconds: int` | jump the simulated clock; no cost. TTL expiry is detected lazily on the next `Call` |
+| `SwitchModel` | `model: str` | set model; invalidate cache (`cached_tokens → 0`). Zero immediate cost; the next `Call` pays the full rebuild |
 | `SwitchEffort` | `effort: str` | set effort; invalidate cache. Same rebuild-on-next-turn cost shape as `SwitchModel` |
 
-`Turn` is the only event that produces a non-zero cost. `input_tokens` is whatever the
+`Call` is the only event that produces a non-zero cost. `input_tokens` is whatever the
 turn appends to context (a pasted user prompt **and/or** a fake tool-result size such as
 `tool read_file 1500`); the engine does not care which — both are just appended input
-tokens. Stage 2's CLI is where `tool read_file 1500` gets parsed into a `Turn`.
+tokens. Stage 2's CLI is where `tool read_file 1500` gets parsed into a `Call`.
 
 > Out of scope for Stage 1 (Stage 3): `/compact`, `/rewind`, context-edit clearing,
 > cold-resume-after-upgrade, sub-minimum no-cache, multi-breakpoint walk-back. The
-> `Turn`/`SwitchModel`/`SwitchEffort` set is enough to reproduce the worked example in §6.
+> `Call`/`SwitchModel`/`SwitchEffort` set is enough to reproduce the worked example in §6.
 
 ## 4. `apply_event`
 
@@ -85,12 +85,12 @@ def apply_event(state: CacheState, event: Event, config: Config) -> tuple[CacheS
 
 - **Pure**: returns a *new* `CacheState` (does not mutate the input) plus the
   `CostBreakdown` for this event. No printing, no global clock.
-- TTL check happens **inside** `apply_event` at the start of a `Turn`: if
+- TTL check happens **inside** `apply_event` at the start of a `Call`: if
   `state.now - state.last_used > state.ttl_seconds`, set `cached_tokens = 0` before
   costing (a cold resume → full write).
-- Non-`Turn` events return a `CostBreakdown` of all zeros.
+- Non-`Call` events return a `CostBreakdown` of all zeros.
 
-### `Turn` bookkeeping (the heart of Stage 1)
+### `Call` bookkeeping (the heart of Stage 1)
 
 ```
 # 1. expire if idle past TTL
@@ -165,7 +165,7 @@ These are the choices I'd like signed off before coding — flagged rather than 
    *1.25×* ($3.75). I propose the engine uses the faithful **1.25× write** and treats the
    blog's number as an approximation. The validation assertion in §6 would use a
    tolerance band so both round to "~7× cheaper." — **OK to use 1.25× write?**
-2. **Event representation.** Tagged dataclasses (`Turn`, `Advance`, …) as above, vs a
+2. **Event representation.** Tagged dataclasses (`Call`, `Advance`, …) as above, vs a
    single dict like `{"type": "turn", ...}`. I lean dataclasses for readability/typo
    safety. — **dataclasses OK?**
 3. **Config format.** JSON (shown) vs TOML/YAML. JSON needs no dependency. — **JSON OK?**

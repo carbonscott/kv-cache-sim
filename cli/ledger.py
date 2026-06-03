@@ -9,19 +9,19 @@ from __future__ import annotations
 from sim.cost import CostBreakdown
 from sim.events import (
     Advance,
+    Call,
     ClearToolResults,
     Compact,
     Rewind,
     SwitchEffort,
     SwitchModel,
-    Turn,
     Upgrade,
 )
 from sim.state import CacheState
 
 HEADER = (
     f"{'#':>2}  {'event':<28} {'read':>7} {'write':>7} {'out':>6} "
-    f"{'hit%':>5} {'turn $':>9} {'total $':>9}"
+    f"{'hit%':>5} {'call $':>9} {'total $':>9}"
 )
 SEPARATOR = "-" * len(HEADER)
 
@@ -29,7 +29,7 @@ SEPARATOR = "-" * len(HEADER)
 def describe_event(event) -> str:
     """A short label for an event, used in the ledger's `event` column."""
     name = type(event).__name__
-    if isinstance(event, Turn):
+    if isinstance(event, Call):
         return f"{name}(in={event.input_tokens}, out={event.output_tokens})"
     if isinstance(event, Advance):
         return f"{name}({event.seconds}s)"

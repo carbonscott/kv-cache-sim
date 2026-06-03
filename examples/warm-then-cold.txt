@@ -1,47 +1,52 @@
 # warm-then-cold.txt -- a scripted cache-sim story for run_batch.py
 #
 # This file IS the REPL command grammar, fed line by line to one Session.
-# Blank lines commit the pending turn (== `send`); `#` lines are comments,
-# used here for narration and visual spacing. NOTE: a blank line always
-# commits, so we use `#` lines (not blanks) to separate sections -- the only
-# blank lines below are the deliberate per-turn commits.
+# `user`/`tool` are free local appends; `call <out> [tu=N]` is the one billed
+# API request -- it mirrors a single `resp = call_llm(...)` in an agent loop.
+# `#` lines are comments and blank lines are no-ops (used here for spacing).
 #
-# The session starts cold on the first config model (opus-4.8) with an
-# empty prefix. We watch the cache warm up, expire, and rebuild.
+# Where a turn calls a tool we record BOTH API calls the real loop makes: the
+# tool-requesting generation (a small ~50-token "let me read X" + tool_use), then
+# the final answer after the tool result comes back. No-tool turns are one call.
 #
-# --- Turn 1: open a big context. Nothing is cached yet, so this is all
-# write -- the price we pay once to seed the prefix.
+# The session starts cold on the first config model (opus-4.8) with an empty
+# prefix. We watch the cache warm up, expire, and rebuild.
+
+# --- Call 1: open a big context. Nothing is cached yet, so this is all write --
+# the price we pay once to seed the prefix.
 user 50000
-assistant 500
+call 500
 
-# --- Turn 2: a warm follow-up. The 50K prefix is cached, so we mostly
-# read (cheap) and only write the new tokens. Hit ratio should be high.
+# --- A tool turn: the model asks to read a file (call 2, ~50 tok + tool_use),
+# the tool result comes back, and the model answers (call 3). The 50K prefix is
+# cached, so these mostly read (cheap) and only write the new tokens.
 user 1500
+call 50 tu=1
 tool read_file 1200
-assistant 600
+call 600
 
-# --- Turn 3: still warm, ratio climbs further as the cached prefix grows.
+# --- Call 4: still warm, ratio climbs further as the cached prefix grows.
 user 1000
-assistant 400
+call 400
 
 # --- Idle 10 minutes: past the 5-minute TTL, so the cache goes cold.
-# (advance applies immediately -- no blank line / commit needed after it.)
+# (advance applies immediately -- no call needed after it.)
 advance 10m
-# --- Turn 4: cold resume. The prefix has to be rebuilt from scratch --
+# --- Call 5: cold resume. The prefix has to be rebuilt from scratch --
 # expect a "cold resume" note and a cost spike.
 user 1200
-assistant 500
+call 500
 
-# --- Turn 5: warm again on the freshly rebuilt prefix.
+# --- Call 6: warm again on the freshly rebuilt prefix.
 user 800
-assistant 400
+call 400
 
 # --- Switch models: this invalidates the cache (the new model can't reuse
 # the old prefix). Like advance, it applies immediately.
 model sonnet-4.6
-# --- Turn 6: rebuild on the new model -- another full write.
+# --- Call 7: rebuild on the new model -- another full write.
 user 1000
-assistant 700
+call 700
 
 # --- Done.
 quit

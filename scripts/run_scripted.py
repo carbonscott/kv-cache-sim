@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from cli import ledger
 from sim.config import load_config
 from sim.engine import apply_event
-from sim.events import Advance, SwitchEffort, SwitchModel, Turn
+from sim.events import Advance, Call, SwitchEffort, SwitchModel
 from sim.state import CacheState
 
 CONFIG_PATH = os.path.join(
@@ -39,17 +39,17 @@ def build_initial_state(config) -> CacheState:
 
 
 def build_events() -> list:
-    """A small story: a few warm turns, an idle gap, a model switch, an effort switch."""
+    """A small story: a few warm calls, an idle gap, a model switch, an effort switch."""
     return [
-        Turn(input_tokens=2_000, output_tokens=500),    # warm turn
-        Turn(input_tokens=1_500, output_tokens=800),    # warm turn, ratio climbs
+        Call(input_tokens=2_000, output_tokens=500),    # warm call
+        Call(input_tokens=1_500, output_tokens=800),    # warm call, ratio climbs
         Advance(seconds=600),                            # idle 10 min (> 5 min TTL)
-        Turn(input_tokens=1_000, output_tokens=400),    # cold resume: full rebuild
-        Turn(input_tokens=1_200, output_tokens=600),    # warm again
+        Call(input_tokens=1_000, output_tokens=400),    # cold resume: full rebuild
+        Call(input_tokens=1_200, output_tokens=600),    # warm again
         SwitchModel(model="opus-4.8"),                   # invalidates cache
-        Turn(input_tokens=1_000, output_tokens=900),    # rebuild on opus
+        Call(input_tokens=1_000, output_tokens=900),    # rebuild on opus
         SwitchEffort(effort="medium"),                   # invalidates cache
-        Turn(input_tokens=800, output_tokens=700),      # rebuild on new effort
+        Call(input_tokens=800, output_tokens=700),      # rebuild on new effort
     ]
 
 

@@ -1,9 +1,10 @@
 """The shared command session: parse a command line, drive the engine, return output.
 
-This is the core both front-ends use. A turn is *accumulated* from one or more
-`user` / `tool` / `assistant` commands and committed as a single Turn by `send` (or a
-blank line) -- mirroring how a real Claude Code request bundles user input, several
-tool results, and one generation into one request.
+This is the core both front-ends use. The API call is the atomic, billed unit, mirroring
+a real agent loop's `while True: resp = call_llm(...)`. `user` / `tool` commands are free
+local appends that accumulate pending input (tokens + content blocks); `call <out> [tu=N]`
+is the only billed event -- it issues one API request that reads the accumulated input,
+emits the generation's output, and resets the pending input.
 
 Session has no I/O of its own: handle() returns a list of output lines for the caller
 (REPL or batch runner) to print.
@@ -18,12 +19,12 @@ from sim.config import Config
 from sim.engine import apply_event
 from sim.events import (
     Advance,
+    Call,
     ClearToolResults,
     Compact,
     Rewind,
     SwitchEffort,
     SwitchModel,
-    Turn,
     Upgrade,
 )
 from sim.state import CacheState
@@ -32,10 +33,10 @@ from sim.tokenizer import count_tokens, is_approximate
 from . import ledger
 
 HELP = """commands:
-  user <n | text...>      add user-input tokens to the pending turn
-  tool <name> <n>         add a fake tool-result of n tokens to the pending turn
-  assistant <n | text...> add assistant-output tokens to the pending turn
-  send                    commit the pending turn (a blank line does the same)
+  user <n | text...>      append user-input tokens to the pending call (free; +1 block)
+  tool <name> <n>         append a fake tool-result of n tokens (free; +1 block)
+  call <out> [tu=N]       issue one API request: bill the accumulated input, emit <out>
+                          output tokens in max(1, N) blocks, then reset the pending input
   advance <dur>           jump the clock (e.g. 90s, 6m, 1h, or bare seconds)
   ttl <5m | 1h>           switch cache TTL (no invalidation; changes the write rate)
   rewind <to_tokens>      truncate back to an earlier prefix length (re-hits in TTL)
@@ -44,7 +45,7 @@ HELP = """commands:
   model <name>            switch model (invalidates the cache)
   effort <level>          switch effort level (invalidates the cache)
   upgrade                 simulate a CC upgrade (invalidates the cache, even in TTL)
-  status                  show current session state and the pending turn
+  status                  show current session state and the pending input
   reset                   wipe everything back to a fresh cold session
   save <file>             write this session's commands to a replayable file
   load <file>             replace this session by replaying a saved file
@@ -56,17 +57,17 @@ HELP = """commands:
 # `save`/`load` are handled by the REPL front-end (file I/O lives there); the
 # batch runner doesn't support them.
 COMMAND_NAMES = (
-    "user", "tool", "assistant", "send", "advance", "ttl", "rewind", "compact",
+    "user", "tool", "call", "advance", "ttl", "rewind", "compact",
     "clear-tools", "model", "effort", "upgrade", "status", "reset", "save",
     "load", "help", "quit", "exit",
 )
 
 # State-changing verbs that get recorded into Session.history for save/replay.
-# `send` is recorded specially (only when a pending turn actually commits), so
-# it's not listed here. Unknown verbs and read-only verbs (status/help) are not
-# recorded.
+# `user`/`tool` accumulate the pending call; `call` bills it -- all three are
+# recorded so a save round-trips. Unknown verbs and read-only verbs (status/help)
+# are not recorded.
 RECORDABLE = frozenset({
-    "user", "tool", "assistant", "advance", "ttl", "rewind",
+    "user", "tool", "call", "advance", "ttl", "rewind",
     "compact", "clear-tools", "model", "effort", "upgrade", "reset",
 })
 
@@ -107,7 +108,7 @@ def default_state(config: Config) -> CacheState:
 
 
 class Session:
-    """Holds engine state, the running cost, and the pending (uncommitted) turn."""
+    """Holds engine state, the running cost, and the pending (un-billed) input."""
 
     def __init__(self, state: CacheState, config: Config):
         self.state = state
@@ -116,32 +117,12 @@ class Session:
         self.running_total = 0.0
         self.turn_index = 0
         self.pending_input = 0
-        self.pending_output = 0
         self.pending_input_blocks = 0
-        self.pending_output_blocks = 0
         self.done = False
         self.just_reset = False  # set by `reset`; the REPL checks it to reprint its banner
         self.history: list[str] = []  # state-changing commands, for save/load replay
 
-    # -- pending-turn helpers ------------------------------------------------
-
-    def _has_pending(self) -> bool:
-        return self.pending_input > 0 or self.pending_output > 0
-
-    def _commit_turn(self) -> list[str]:
-        if not self._has_pending():
-            return ["(nothing to send: the pending turn is empty)"]
-        event = Turn(
-            input_tokens=self.pending_input,
-            output_tokens=self.pending_output,
-            input_blocks=self.pending_input_blocks,
-            output_blocks=self.pending_output_blocks,
-        )
-        self.pending_input = 0
-        self.pending_output = 0
-        self.pending_input_blocks = 0
-        self.pending_output_blocks = 0
-        return self._apply(event)
+    # -- engine application --------------------------------------------------
 
     def _apply(self, event) -> list[str]:
         """Apply an event to the engine and format its ledger row + notes."""
@@ -165,11 +146,7 @@ class Session:
         """Process one command line, returning output lines to print."""
         stripped = line.strip()
         if stripped == "":
-            # A blank line commits the pending turn; record it as `send` only if
-            # something actually commits, so stray blank lines don't litter history.
-            if self._has_pending():
-                self.history.append("send")
-            return self._commit_turn()
+            return []  # blank line: a no-op (the API call is the only billed event)
         if stripped.startswith("#"):
             return []  # comment line: ignored by both front-ends
 
@@ -188,17 +165,12 @@ class Session:
             return self._status()
         if command == "reset":
             return self._reset()
-        if command == "send":
-            # Same as a blank line: only record when a turn actually commits.
-            if self._has_pending():
-                self.history.append("send")
-            return self._commit_turn()
         if command == "user":
             return self._user(args)
         if command == "tool":
             return self._tool(args)
-        if command == "assistant":
-            return self._assistant(args)
+        if command == "call":
+            return self._call(args)
         if command == "advance":
             return self._advance(args)
         if command == "ttl":
@@ -223,8 +195,8 @@ class Session:
         added = _tokens_or_text(" ".join(args), self.encoding)
         self.pending_input += added
         self.pending_input_blocks += 1  # a user message materializes one content block
-        return [f"+{added} input tok (pending turn: in={self.pending_input}, "
-                f"out={self.pending_output})"]
+        return [f"+{added} input tok (pending input: {self.pending_input} tok, "
+                f"{self.pending_input_blocks} blocks)"]
 
     def _tool(self, args: list[str]) -> list[str]:
         if len(args) < 2 or not re.fullmatch(r"\d+", args[-1]):
@@ -232,18 +204,35 @@ class Session:
         name = " ".join(args[:-1])
         added = int(args[-1])
         self.pending_input += added
-        self.pending_input_blocks += 2  # a tool round-trip = tool_use + tool_result blocks
+        # Only the tool_result is input; the tool_use block belongs to the requesting
+        # call's output, so a tool result is one input block.
+        self.pending_input_blocks += 1
         return [f"+{added} tool-result tok from {name!r} "
-                f"(pending turn: in={self.pending_input}, out={self.pending_output})"]
+                f"(pending input: {self.pending_input} tok, "
+                f"{self.pending_input_blocks} blocks)"]
 
-    def _assistant(self, args: list[str]) -> list[str]:
-        if not args:
-            return ["usage: assistant <n | text...>"]
-        added = _tokens_or_text(" ".join(args), self.encoding)
-        self.pending_output += added
-        self.pending_output_blocks += 1  # an assistant generation is one content block
-        return [f"+{added} output tok (pending turn: in={self.pending_input}, "
-                f"out={self.pending_output})"]
+    def _call(self, args: list[str]) -> list[str]:
+        """Issue one API request: bill the accumulated input, emit <out> output tokens
+        in max(1, tu) blocks, then reset the pending input. This is the only billed
+        event -- it mirrors one `resp = call_llm(...)` in an agent loop."""
+        if not args or not re.fullmatch(r"\d+", args[0]):
+            return ["usage: call <out> [tu=N]   (out = output tokens, N = tool_use blocks)"]
+        out = int(args[0])
+        tu = 0
+        for extra in args[1:]:
+            match = re.fullmatch(r"tu=(\d+)", extra)
+            if not match:
+                return ["usage: call <out> [tu=N]   (out = output tokens, N = tool_use blocks)"]
+            tu = int(match.group(1))
+        event = Call(
+            input_tokens=self.pending_input,
+            output_tokens=out,
+            input_blocks=self.pending_input_blocks,
+            output_blocks=max(1, tu),  # tu real tool_use blocks, or 1 text block when tu=0
+        )
+        self.pending_input = 0
+        self.pending_input_blocks = 0
+        return self._apply(event)
 
     def _advance(self, args: list[str]) -> list[str]:
         if not args:
@@ -296,16 +285,14 @@ class Session:
         return self._apply(SwitchEffort(effort=args[0]))
 
     def _reset_session(self, clear_history: bool) -> None:
-        """Wipe engine state, cost, and the pending turn back to a fresh cold session.
+        """Wipe engine state, cost, and the pending input back to a fresh cold session.
         Shared by `reset` (keeps history, so replay reproduces the reset) and `load`
         (clears history before replaying a saved file). Keeps config/encoding."""
         self.state = default_state(self.config)
         self.running_total = 0.0
         self.turn_index = 0
         self.pending_input = 0
-        self.pending_output = 0
         self.pending_input_blocks = 0
-        self.pending_output_blocks = 0
         if clear_history:
             self.history = []
 
@@ -322,7 +309,7 @@ class Session:
         """Replace this session by replaying a saved command file. Resets to a fresh
         cold session (clearing history), then feeds each line through handle() -- the
         same pure engine path as batch mode -- so cost, turn index, and the pending
-        turn are all re-derived deterministically. Because handle() re-records the
+        input are all re-derived deterministically. Because handle() re-records the
         replayed commands, self.history ends equal to the file's recordable lines, so
         a subsequent save round-trips. Returns the accumulated replay output."""
         self._reset_session(clear_history=True)
@@ -333,10 +320,10 @@ class Session:
 
     def _status(self) -> list[str]:
         lines = [ledger.status_line(self.state, self.running_total)]
-        if self._has_pending():
+        if self.pending_input > 0:
             lines.append(
-                f"pending turn: in={self.pending_input}, out={self.pending_output} "
-                f"(use 'send' or a blank line to commit)"
+                f"pending input: {self.pending_input} tok, "
+                f"{self.pending_input_blocks} blocks (bill it with 'call <out>')"
             )
         if is_approximate(self.encoding):
             lines.append(f"note: tokenizer {self.encoding!r} unavailable; "

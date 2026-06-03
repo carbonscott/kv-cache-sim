@@ -12,13 +12,13 @@ from .config import Config, dollars
 from .cost import CostBreakdown
 from .events import (
     Advance,
+    Call,
     ClearToolResults,
     Compact,
     Event,
     Rewind,
     SwitchEffort,
     SwitchModel,
-    Turn,
     Upgrade,
 )
 from .state import CacheState
@@ -28,8 +28,8 @@ def apply_event(
     state: CacheState, event: Event, config: Config
 ) -> tuple[CacheState, CostBreakdown]:
     """Apply one event, returning the new state and its cost breakdown."""
-    if isinstance(event, Turn):
-        return _apply_turn(state, event, config)
+    if isinstance(event, Call):
+        return _apply_call(state, event, config)
     if isinstance(event, Advance):
         return _apply_advance(state, event)
     if isinstance(event, SwitchModel):
@@ -48,7 +48,7 @@ def apply_event(
 
 
 def _apply_advance(state: CacheState, event: Advance) -> tuple[CacheState, CostBreakdown]:
-    """Move the simulated clock forward. No cost; TTL is checked on the next Turn."""
+    """Move the simulated clock forward. No cost; TTL is checked on the next Call."""
     new_state = replace(state, now=state.now + event.seconds)
     return new_state, CostBreakdown.zero()
 
@@ -57,7 +57,7 @@ def _apply_switch_model(
     state: CacheState, event: SwitchModel
 ) -> tuple[CacheState, CostBreakdown]:
     """Switch model. Different model = different cache key = full rebuild, paid by
-    the next Turn. TTL is auth-driven, not model-driven, so it is left unchanged."""
+    the next Call. TTL is auth-driven, not model-driven, so it is left unchanged."""
     if event.model == state.model:
         return state, CostBreakdown.zero(["model unchanged; cache kept"])
     new_state = replace(state, model=event.model, cached_tokens=0, cached_blocks=0)
@@ -84,7 +84,7 @@ def _apply_upgrade(
     sits behind a *different* prefix: zero the cache regardless of TTL. Unlike the
     TTL cold resume (time-based) or SwitchModel (cache-key change), this is the
     worst case -- no hits at all even on an otherwise-warm session. The system_tokens
-    boundary is left unchanged; the next Turn pays the full rebuild."""
+    boundary is left unchanged; the next Call pays the full rebuild."""
     new_state = replace(state, cached_tokens=0, cached_blocks=0, breakpoints=())
     note = "upgrade: system prompt changed; cache invalidated even within TTL"
     return new_state, CostBreakdown.zero([note])
@@ -96,7 +96,7 @@ def _apply_rewind(
     """A /rewind truncates the sequence back to an earlier prefix of to_tokens.
 
     Since the cache is a pure leading prefix, the earlier offset is itself still
-    cached, so (within TTL) it re-hits: the next Turn reads the rewound prefix
+    cached, so (within TTL) it re-hits: the next Call reads the rewound prefix
     rather than rewriting it. last_used is left unchanged -- a rewind sends no
     request, so the TTL clock keeps running from the last real turn."""
     if event.to_tokens >= state.prefix_tokens:
@@ -140,8 +140,8 @@ def _apply_compact(
 
     Unlike a rewind, this is a real request: generating the summary reads the whole
     warm prefix cheaply and emits the summary as output. We bill that exactly like a
-    zero-input turn that outputs summary_tokens (so read/write/TTL/sub-minimum math
-    lives in one place, _apply_turn), then truncate the sequence: the protected
+    zero-input call that outputs summary_tokens (so read/write/TTL/sub-minimum math
+    lives in one place, _apply_call), then truncate the sequence: the protected
     prefix survives and re-hits, while the long conversation is gone. The summary is
     fresh output, so -- like any turn's output -- it is cached only on the next turn.
     last_used moves to now because a request was sent."""
@@ -150,9 +150,9 @@ def _apply_compact(
         note = "summary not smaller than conversation layer; nothing to compact"
         return state, CostBreakdown.zero([note])
 
-    # Cost of generating the summary: a zero-input turn that outputs the summary.
-    turn_state, breakdown = _apply_turn(
-        state, Turn(input_tokens=0, output_tokens=event.summary_tokens), config
+    # Cost of generating the summary: a zero-input call that outputs the summary.
+    turn_state, breakdown = _apply_call(
+        state, Call(input_tokens=0, output_tokens=event.summary_tokens), config
     )
 
     # The surviving valid leading prefix of the new sequence: the protected prefix
@@ -190,7 +190,7 @@ def _apply_clear(
     Because the cache is a leading prefix, punching a hole in the middle invalidates
     everything downstream: only the protected prefix survives as a valid cached prefix
     and the sequence shrinks by freed_tokens. Like a rewind this sends no request, so
-    the cost is zero and the next Turn rewrites the shifted suffix.
+    the cost is zero and the next Call rewrites the shifted suffix.
 
     Gated by clear_at_least (= the model's min_cacheable): clearing less than that is
     not worth the rewrite, so it is a no-op. Also a no-op if freed_tokens is not a
@@ -235,8 +235,8 @@ def _apply_clear(
     return new_state, CostBreakdown.zero([note])
 
 
-def _apply_turn(
-    state: CacheState, event: Turn, config: Config
+def _apply_call(
+    state: CacheState, event: Call, config: Config
 ) -> tuple[CacheState, CostBreakdown]:
     """The heart of Stage 1: cost one request/response and grow the sequence.
 
