@@ -68,9 +68,13 @@ def status_line(state: CacheState, running_total: float) -> str:
     # Report the *effective* cache: an idle-past-TTL session reads as cold, matching
     # what the next turn would actually do, rather than the stale snapshot in cached_tokens.
     cached = 0 if state.is_expired else state.cached_tokens
+    # Show the protected prefix only when it is in play, so status output stays
+    # byte-identical for every system=0 run (comparability with existing sweeps).
+    system = f"sys={state.system_tokens} " if state.system_tokens > 0 else ""
     return (
         f"model={state.model} effort={state.effort} "
         f"ttl={state.ttl_seconds}s now={state.now:.0f}s "
         f"cached={cached}/{state.prefix_tokens} tok "
+        f"{system}"
         f"total=${running_total:.5f}"
     )

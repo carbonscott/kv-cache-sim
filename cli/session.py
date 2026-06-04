@@ -39,6 +39,7 @@ HELP = """commands:
                           output tokens in max(1, N) blocks, then reset the pending input
   advance <dur>           jump the clock (e.g. 90s, 6m, 1h, or bare seconds)
   ttl <5m | 1h>           switch cache TTL (no invalidation; changes the write rate)
+  system <n>              set the protected prefix length (cold session only)
   rewind <to_tokens>      truncate back to an earlier prefix length (re-hits in TTL)
   compact <summary_tokens> replace the conversation layer with a summary (keeps system)
   clear-tools <n>         clear n tokens of old tool results (invalidates downstream)
@@ -57,7 +58,7 @@ HELP = """commands:
 # `save`/`load` are handled by the REPL front-end (file I/O lives there); the
 # batch runner doesn't support them.
 COMMAND_NAMES = (
-    "user", "tool", "call", "advance", "ttl", "rewind", "compact",
+    "user", "tool", "call", "advance", "ttl", "system", "rewind", "compact",
     "clear-tools", "model", "effort", "upgrade", "status", "reset", "save",
     "load", "help", "quit", "exit",
 )
@@ -67,7 +68,7 @@ COMMAND_NAMES = (
 # recorded so a save round-trips. Unknown verbs and read-only verbs (status/help)
 # are not recorded.
 RECORDABLE = frozenset({
-    "user", "tool", "call", "advance", "ttl", "rewind",
+    "user", "tool", "call", "advance", "ttl", "system", "rewind",
     "compact", "clear-tools", "model", "effort", "upgrade", "reset",
 })
 
@@ -175,6 +176,8 @@ class Session:
             return self._advance(args)
         if command == "ttl":
             return self._set_ttl(args)
+        if command == "system":
+            return self._system(args)
         if command == "rewind":
             return self._rewind(args)
         if command == "compact":
@@ -254,6 +257,25 @@ class Session:
         self.state = replace(self.state, ttl_seconds=seconds)
         rate = self.config.write_multiplier(seconds)
         return [f"ttl set to {args[0]} ({seconds}s); cache kept (write rate now {rate}x)"]
+
+    def _system(self, args: list[str]) -> list[str]:
+        """Set the protected leading prefix (system + tool defs + project context).
+        A pure cold marker: it sets system_tokens only -- it does NOT seed prefix or
+        cached tokens. The first `call`'s input naturally carries the protected region,
+        so the cold first call writes it once at write-rate, identical to system=0.
+        Mirrors _set_ttl: a bare replace(), no _apply(), no ledger row, no event.
+
+        Cold guard: refuse unless prefix_tokens == 0. Setting system mid-session can
+        drive the conversation layer negative and silently no-op compact/clear-tools,
+        so the contract requires setting it before the conversation grows."""
+        if len(args) != 1 or not re.fullmatch(r"\d+", args[0]):
+            return ["usage: system <n>   (protected prefix tokens)"]
+        if self.state.prefix_tokens != 0:
+            return ["system must be set on a cold session "
+                    "(prefix_tokens == 0); reset first"]
+        n = int(args[0])
+        self.state = replace(self.state, system_tokens=n)
+        return [f"protected prefix set to {n} tok"]
 
     def _rewind(self, args: list[str]) -> list[str]:
         if len(args) != 1 or not re.fullmatch(r"\d+", args[0]):
