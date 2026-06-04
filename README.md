@@ -28,6 +28,30 @@ This is an **educational approximation**, not a billing oracle:
 - **No real API calls happen.** Tool-call output sizes are specified by you; the simulator
   fakes them to accumulate context.
 
+## How caching bills
+
+Prompt caching is easiest to understand from the agent loop that drives a session:
+
+```python
+while True:
+    resp = call_llm(messages)   # the one billed API request: cache write/read happens HERE
+    messages.append(resp)       # local-only: this list IS the cached prefix, and it only grows
+    tools = [b for b in resp if b.tool_use]
+    if not tools:
+        return                  # turn done
+    out = [run_tool(t) for t in tools]
+    messages.append(tool_result(out))   # local-only append (free) -- extends the prefix
+```
+
+Each `call_llm` is **one API request — the atomic billed unit**. It re-sends the *whole*
+`messages` list, and caching is what makes the unchanged leading prefix a cheap *read*
+instead of a full *write*. Everything between calls — appending the model's response, running
+tools, appending their results — is a free local append that only grows the list, which is why
+the cached prefix grows monotonically within a turn. The simulator's grammar mirrors this
+exactly: `user` and `tool` are the free appends, and `call` is the one request that bills. One
+turn can be several calls — in the ledger below, call 2 requests a tool and call 3 answers
+after the result comes back, which is one pass through this loop.
+
 ## Quickstart
 
 The project is [uv](https://docs.astral.sh/uv/)-managed. No install step is needed — `uv run`
@@ -44,7 +68,7 @@ uv run scripts/run_scripted.py
 # Interactive REPL: drive a session live
 uv run scripts/run_repl.py
 
-# Tests (83 passing)
+# Tests (86 passing)
 uv run pytest
 ```
 
@@ -77,9 +101,10 @@ rebuilds at a cost spike. The model switch on call 8 invalidates the cache again
 
 ## REPL commands
 
-The same grammar drives the REPL and the batch files (one command per line; `#` lines are
-comments; blank lines are no-ops). The API **call** is the atomic billed unit — `user` and
-`tool` are free local appends, and `call` is the one event that issues a request:
+The same engine grammar drives the REPL and the batch files (one command per line; `#` lines
+are comments; blank lines are no-ops); only `save`/`load` are REPL-only, since file I/O lives
+in the REPL front-end. The API **call** is the atomic billed unit — `user` and `tool` are free
+local appends, and `call` is the one event that issues a request:
 
 | Command | Effect |
 |---|---|
@@ -87,14 +112,19 @@ comments; blank lines are no-ops). The API **call** is the atomic billed unit �
 | `tool <name> <n>` | append a fake tool-result of `n` tokens (free; +1 block) |
 | `call <out> [tu=N]` | issue one API request: bill the accumulated input, emit `<out>` output tokens in `max(1, N)` blocks, then reset the pending input |
 | `advance <90s\|6m\|1h>` | jump the simulated clock |
-| `model <name>` / `effort <level>` | switch model/effort (invalidates the cache) |
-| `compact <summary_tokens>` | replace the conversation layer with a summary |
+| `ttl <5m \| 1h>` | switch the cache TTL (no invalidation; changes the write rate) |
+| `system <n>` | set the protected prefix length (cold session only) |
 | `rewind <to_tokens>` | truncate back to an earlier cached prefix (re-hits) |
+| `compact <summary_tokens>` | replace the conversation layer with a summary (keeps system) |
 | `clear-tools <n>` | clear old tool results (invalidates downstream) |
+| `model <name>` / `effort <level>` | switch model/effort (invalidates the cache) |
 | `upgrade` | simulate a CC upgrade (invalidates even within TTL) |
-| `status` / `help` / `quit` | session state / help / leave |
+| `reset` | wipe everything back to a fresh cold session |
+| `save <file>` / `load <file>` | write/replay the session's commands (REPL-only) |
+| `status` / `help` / `quit` \| `exit` | session state / help / leave |
 
-A bare integer is a token count; anything else is tokenized as text.
+A bare integer is a token count; anything else is tokenized as text. The protected prefix set
+by `system` is a floor: a `call` or `rewind` that would shrink the prefix below it is refused.
 
 ## Project layout
 
@@ -105,7 +135,7 @@ A bare integer is a token count; anything else is tokenized as text.
 | `scripts/` | entry points: `run_repl.py`, `run_batch.py`, `run_scripted.py`. |
 | `config/models.json` | all model data — pricing, TTLs, minimums, breakpoint knobs. |
 | `examples/` | self-documenting batch scripts that double as tests. |
-| `tests/` | 83 tests (engine bookkeeping, session grammar, batch runs). |
+| `tests/` | 86 tests (engine bookkeeping, session grammar, batch runs). |
 
 ## How it's built
 
