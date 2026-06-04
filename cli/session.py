@@ -233,6 +233,13 @@ class Session:
             input_blocks=self.pending_input_blocks,
             output_blocks=max(1, tu),  # tu real tool_use blocks, or 1 text block when tu=0
         )
+        prospective = self.state.prefix_tokens + self.pending_input
+        if self.state.system_tokens > 0 and prospective < self.state.system_tokens:
+            return [
+                f"call would leave prefix {prospective} tok below the protected "
+                f"prefix {self.state.system_tokens} tok; not sent "
+                f"(add input or reset to change the protected prefix)"
+            ]
         self.pending_input = 0
         self.pending_input_blocks = 0
         return self._apply(event)
@@ -267,7 +274,10 @@ class Session:
 
         Cold guard: refuse unless prefix_tokens == 0. Setting system mid-session can
         drive the conversation layer negative and silently no-op compact/clear-tools,
-        so the contract requires setting it before the conversation grows."""
+        so the contract requires setting it before the conversation grows. This cold
+        set-time guard is backstopped by the call/rewind refusals (which reject any
+        operation that would push the prefix below the marker), so the negative-layer
+        state is unreachable rather than merely discouraged."""
         if len(args) != 1 or not re.fullmatch(r"\d+", args[0]):
             return ["usage: system <n>   (protected prefix tokens)"]
         if self.state.prefix_tokens != 0:
