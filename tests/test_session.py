@@ -459,6 +459,57 @@ def test_malformed_recordable_line_is_replay_safe(config):
     assert replayed.turn_index == original.turn_index
 
 
+# -- system: set the protected prefix on a cold session ----------------------
+
+def test_system_sets_protected_prefix_records_and_round_trips(config):
+    s = cold_session(config)
+    out = s.handle("system 2000")
+    assert s.state.system_tokens == 2_000
+    assert any("2000" in line for line in out)
+    assert "system 2000" in s.history          # recorded for save/replay
+
+    # The cold guard rejects `system` once the conversation has grown.
+    s.handle("user 7000")
+    s.handle("call 0")                          # prefix_tokens now > 0
+    refused = s.handle("system 3000")
+    assert any("cold session" in line for line in refused)
+    assert s.state.system_tokens == 2_000       # unchanged
+
+    # A save -> load round-trip preserves the value.
+    replayed = cold_session(config)
+    replayed.load_commands(list(s.history))
+    assert replayed.state.system_tokens == 2_000
+
+
+def test_system_refuses_undersized_cold_first_call(config):
+    s = cold_session(config)
+    s.handle("system 2000")
+    s.handle("user 500")
+    out = s.handle("call 0")                  # prospective 500 < system 2000
+    assert s.state.prefix_tokens == 0         # refused, not billed
+    assert s.state.system_tokens == 2_000     # unchanged
+    assert s.pending_input == 500             # preserved for a corrected call
+    assert any("protected prefix" in line for line in out)
+    s.handle("user 1500")                     # pending now 2000
+    s.handle("call 0")                        # prospective 2000 == system → allowed
+    assert s.state.prefix_tokens == 2_000
+    assert s.state.system_tokens == 2_000
+
+
+def test_rewind_below_system_is_refused(config):
+    s = cold_session(config)
+    s.handle("system 2000")
+    s.handle("user 7000")
+    s.handle("call 0")                        # prefix 7000, system 2000
+    assert s.state.prefix_tokens == 7_000
+    out = s.handle("rewind 500")              # inside the protected prefix
+    assert s.state.prefix_tokens == 7_000     # unchanged, refused
+    assert s.state.system_tokens == 2_000
+    assert any("nothing to rewind" in line for line in out)
+    s.handle("rewind 3000")                   # above the marker → allowed
+    assert s.state.prefix_tokens == 3_000
+
+
 # -- status reflects effective (TTL-aware) cache -----------------------------
 
 def test_status_reports_zero_cached_after_idle_past_ttl(config):

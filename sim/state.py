@@ -24,6 +24,10 @@ class CacheState:
     holds the sorted token offsets that currently carry live cache entries. Both are
     invariants the engine maintains: breakpoints is sorted ascending and, when the
     cache is warm, its trailing entry equals cached_tokens (cold -> breakpoints == ()).
+    A further invariant: system_tokens <= prefix_tokens whenever prefix_tokens > 0 (the
+    conversation layer is never negative once the session is warm), maintained by
+    refusing a call that would establish -- or a rewind that would truncate -- a prefix
+    below the protected marker.
 
     prefix_blocks / cached_blocks run parallel to prefix_tokens / cached_tokens but count
     content blocks (the unit Anthropic's 20-block lookback walks back over) instead of

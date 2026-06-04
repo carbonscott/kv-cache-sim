@@ -106,6 +106,14 @@ def _apply_rewind(
         )
         return state, CostBreakdown.zero([note])
 
+    if state.system_tokens > 0 and event.to_tokens < state.system_tokens:
+        note = (
+            f"rewind target {event.to_tokens} < protected prefix "
+            f"{state.system_tokens} tok; nothing to rewind "
+            f"(reset to change the protected prefix)"
+        )
+        return state, CostBreakdown.zero([note])
+
     if state.is_expired:
         # The earlier entry has expired along with everything else: cold.
         new_cached = 0
